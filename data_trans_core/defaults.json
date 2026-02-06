@@ -1,0 +1,27 @@
+{
+  "tasks": [
+    {
+      "id": "default",
+      "db_type": "",
+      "db": {
+        "url": "",
+        "table": "tb_example",
+        "key_columns": ["example"]
+      },
+      "api": {
+        "url": "http://example.com:19127/get/info/list",
+        "method": "GET",
+        "headers": {"Authorization":""},
+        "items_json_path": "/xxx"
+      },
+      "column_mapping": {
+        "example": "example"
+      },
+      "column_types": {
+        "example": "example"
+      },
+      "mode": "insert",
+      "batch_size": 100
+    }
+  ]
+}

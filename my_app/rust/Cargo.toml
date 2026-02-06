@@ -1,0 +1,16 @@
+[package]
+name = "rust_lib_my_app"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib", "staticlib"]
+
+[dependencies]
+data_trans_core = { path = "../../data_trans_core" }
+serde = "1.0.228"
+serde_json = "1.0.149"
+flutter_rust_bridge = { workspace = true }
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(frb_expand)'] }

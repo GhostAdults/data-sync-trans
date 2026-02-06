@@ -1,0 +1,14 @@
+[package]
+name = "data_trans_cli"
+version = "0.1.0"
+edition = "2021"
+
+
+[[bin]]
+name = "data_trans_cli"
+path = "src/main.rs"
+
+[dependencies]
+data_trans_core = { path = "../data_trans_core" }
+
+clap = { version = "4.5", features = ["derive"] }

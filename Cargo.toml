@@ -1,0 +1,12 @@
+[workspace]
+
+members = [ 
+    "data_trans_core", 
+    "data_trans_cli",
+    "my_app/rust"
+]
+resolver = "2"
+
+[workspace.dependencies]
+tokio = { version = "1.36", features = ["rt-multi-thread", "macros"] }
+flutter_rust_bridge = "=2.11.1"
