@@ -4,8 +4,9 @@
 use clap::{Parser, Subcommand};
 use crate::core::{Config, ApiConfig};
 use crate::{run_serve,detect_db_kind};
-use crate::core::server::*;
-use crate::core::db::DbKind;
+use crate::core::serve::*;
+use crate::util::dbpool::DbKind;
+use crate::util::dbutil::get_pool_from_config;
 use tokio::runtime::Runtime;
 use std::path::PathBuf;
 use std::fs;

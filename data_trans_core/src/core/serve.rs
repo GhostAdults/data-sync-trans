@@ -7,12 +7,13 @@ use std::collections::BTreeMap;
 use chrono::NaiveDateTime;
 
 use crate::core::{ApiResp};
-use crate::core::db::{DbKind, DbPool, get_db_pool, get_pool_from_query};
+use crate::util::dbpool::{DbKind, DbPool, get_pool_from_query};
+use crate::util::dbutil::get_pool_from_config;
 use crate::core::{Config, ColInfo, TypedVal};
-use crate::core::client_tool::fetch_json;
-use anyhow::{Context, Result};
+use crate::core::pipeline::{DataSourceType, PipelineConfig, sync_with_pipeline_task};
+use anyhow::Result;
 use anyhow::*;
-use crate::{detect_db_kind,get_config_manager};
+use crate::get_config_manager;
 use sqlx::{Row, PgPool, MySqlPool};
 use super::{TablesQuery, DescribeQuery, GenMapQuery, BaseDbQuery,CreateConfigReq,UpdateConfigReq, MappingConfig};
 use crate::app_config::value::ConfigValue;
@@ -267,24 +268,9 @@ fn guess_type(sql_type: &str) -> &'static str {
     }
 }
 
-pub async fn get_pool_from_config(cfg: &Config) -> Result<DbPool> {
-    let db_config = Config::parse_db_config(&cfg.output)?;
-    let db_type_str = Config::get_source_db_type(&cfg.output);
 
-    let kind = detect_db_kind(&db_config.url, db_type_str.as_ref().and_then(|s: &String| {
-        if s.eq_ignore_ascii_case("postgres") { Some(DbKind::Postgres) }
-        else if s.eq_ignore_ascii_case("mysql") { Some(DbKind::Mysql) }
-        else { None }
-    })).context("无法识别数据库类型")?;
-    let max_conns = db_config.max_connections.unwrap_or(20);
-    let acq_timeout = db_config.acquire_timeout_secs.unwrap_or(60);
-    get_db_pool(&db_config.url, kind, max_conns, Some(acq_timeout)).await
-}
-
-/// 同步数据函数（使用 Pipeline）
+/// 同步数据函数
 pub async fn sync(cfg: &Config, pool: &DbPool) -> Result<()> {
-    use crate::core::sync_pipeline::{sync_with_pipeline_custom, PipelineConfig, DataSourceType};
-
     // 根据 input.type 判断数据源类型
     let data_source = match cfg.input.source_type.as_str() {
         "api" => DataSourceType::Api,
@@ -293,19 +279,21 @@ pub async fn sync(cfg: &Config, pool: &DbPool) -> Result<()> {
             limit: None,
             offset: None,
         },
-        _ => DataSourceType::Api, // 默认 API
+        unknown => {
+            bail!("不支持的输入类型: '{}'. 支持的类型: 'api', 'database'", unknown);
+        }
     };
 
     let pipeline_config = PipelineConfig {
-        reader_threads: 1,
+        reader_threads: 4,
         writer_threads: 4,
         channel_buffer_size: 1000,
-        batch_size: cfg.batch_size.unwrap_or(100),
+        batch_size: cfg.batch_size.unwrap_or(1000),
         use_transaction: true,
         data_source,
     };
 
-    let _stats = sync_with_pipeline_custom(cfg.clone(), pool.clone(), pipeline_config).await?;
+    let _stats = sync_with_pipeline_task(cfg.clone(), pool.clone(), pipeline_config).await?;
     Ok(())
 }
 
@@ -404,7 +392,7 @@ pub async fn sync_command(task_id: String, mapping: MappingConfig) -> (StatusCod
     let pool = match get_pool_from_config(&cfg).await {
         Ok(p) => p,
         Err(e) => return (StatusCode::BAD_REQUEST, Json(ApiResp { ok: false, data: None, error: Some(e.to_string()) })),
-    };
+    };      
 
     match sync(&cfg, &pool).await {
         Ok(()) => (StatusCode::OK, Json(ApiResp { ok: true, data: Some(serde_json::json!({})), error: None })),

@@ -3,7 +3,9 @@
     "allow": [
       "Bash(cargo:*)",
       "Bash(rustc:*)",
-      "Bash(./syncengine.exe:*)"
+      "Bash(./syncengine.exe:*)",
+      "Bash(ls -la \"E:\\\\github\\\\data-sync-desktop\\\\data_trans_core\\\\src\\\\core\"\" | grep \".rs \")",
+      "Bash(test:*)"
     ]
   }
 }

@@ -1,7 +1,8 @@
 pub mod core;
 pub mod dsl_engine;
 pub mod app_config;
-use crate::core::db::DbKind;
+pub mod util;
+use crate::util::dbpool::DbKind;
 use anyhow::{Result, bail};
 use crate::core::{Config,serve_http};
 use regex::Regex;

@@ -4,7 +4,7 @@ use flutter_rust_bridge::frb;
 use data_trans_core::app_config::path::default_config_path;
 pub use data_trans_core::core::Config;
 pub use data_trans_core::core::{TablesQuery,BaseDbQuery};
-pub use data_trans_core::core::server::list_tables;
+pub use data_trans_core::core::serve::list_tables;
 use serde_json::json;
 
 #[frb(sync)] // Synchronous mode for simplicity of the demo

@@ -28,7 +28,7 @@ pub struct DbConfig {
     pub timeout_secs: Option<u64>,
 }
 
-use crate::core::server::{DbParams, dbkind_from_opt_str};
+use crate::core::serve::{DbParams, dbkind_from_opt_str};
 use crate::detect_db_kind;
 
 // 全局连接池管理器

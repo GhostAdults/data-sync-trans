@@ -1,5 +1,5 @@
 use data_trans_core::init_system_config;
-use data_trans_core::core::server::{create_config, update_config};
+use data_trans_core::core::serve::{create_config, update_config};
 use data_trans_core::core::{CreateConfigReq, UpdateConfigReq};
 use axum::Json;
 use serde_json::json;

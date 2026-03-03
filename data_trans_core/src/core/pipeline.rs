@@ -8,12 +8,12 @@ use tokio::task::JoinHandle;
 use std::sync::Arc;
 use std::time::Instant;
 use std::collections::{HashMap, BTreeMap};
-use sqlx::{Row, Column};
-use data_trans_reader::{DbReaderDriver, Job, JobSplitResult, Task};
+use data_trans_reader::{Job, JobSplitResult, Task};
 
 use crate::core::{Config, TypedVal};
-use crate::core::db::{DbKind, DbPool};
+use crate::util::dbpool::{DbKind, DbPool};
 use crate::core::client_tool::fetch_json;
+use crate::util::{RdbmsJob, RdbmsConfig, PipelineRowMapper};
 
 // ==========================================
 // 数据源抽象
@@ -30,82 +30,46 @@ pub enum DataSourceType {
     },
 }
 
-pub struct CoreDbReaderDriver {
-    pool: Arc<DbPool>,
-}
-
-impl CoreDbReaderDriver {
-    pub fn new(pool: Arc<DbPool>) -> Self {
-        Self { pool }
-    }
-}
-
-impl DbReaderDriver for CoreDbReaderDriver {
-    type Pool = DbPool;
-
-    fn pool(&self) -> &Self::Pool {
-        self.pool.as_ref()
-    }
-}
-
-/// 数据库 Job 实现
+/// 数据库 Job 实现（适配器，内部使用 RdbmsJob）
 pub struct DatabaseJob {
     config: Arc<Config>,
-    db_reader: Arc<dyn DbReaderDriver<Pool = DbPool>>,
+    rdbms_job: Arc<RdbmsJob<PipelineMessage>>,
 }
 
 impl DatabaseJob {
-    pub fn new(config: Arc<Config>, db_reader: Arc<dyn DbReaderDriver<Pool = DbPool>>) -> Self {
-        Self { config, db_reader }
+    pub fn new(config: Arc<Config>, pool: Arc<DbPool>) -> Result<Self> {
+        // 解析数据库配置
+        let db_config = Config::parse_db_config(&config.input)?;
+
+        // 创建 RDBMS 配置
+        let rdbms_config = RdbmsConfig {
+            table: db_config.table,
+            query: None,  // 使用默认 SELECT * FROM table
+            column_mapping: config.column_mapping.clone(),
+            column_types: config.column_types.clone(),
+        };
+
+        // 创建行映射器
+        let mapper = Arc::new(PipelineRowMapper::new(
+            config.column_mapping.clone(),
+            config.column_types.clone(),
+        ));
+
+        // 创建 RdbmsJob
+        let rdbms_job = Arc::new(RdbmsJob::new(rdbms_config, pool, mapper));
+
+        Ok(Self {
+            config,
+            rdbms_job,
+        })
     }
 }
 
 #[async_trait::async_trait]
 impl Job<PipelineMessage> for DatabaseJob {
     async fn split(&self, reader_threads: usize) -> Result<JobSplitResult> {
-        let db_config = Config::parse_db_config(&self.config.input)?;
-        let table = &db_config.table;
-
-        let sql = format!("SELECT COUNT(*) as count FROM {}", table);
-
-        let total = match self.db_reader.pool() {
-            DbPool::Postgres(pg_pool) => {
-                sqlx::query_scalar::<_, i64>(&sql)
-                    .fetch_one(pg_pool)
-                    .await? as usize
-            }
-            DbPool::Mysql(my_pool) => {
-                sqlx::query_scalar::<_, i64>(&sql)
-                    .fetch_one(my_pool)
-                    .await? as usize
-            }
-        };
-
-        let task_size = if total == 0 {
-            0
-        } else {
-            (total + reader_threads - 1) / reader_threads
-        };
-
-        let mut tasks = Vec::new();
-        for i in 0..reader_threads {
-            let offset = i * task_size;
-            if offset >= total {
-                break;
-            }
-            let limit = task_size.min(total - offset);
-
-            tasks.push(Task {
-                task_id: i,
-                offset,
-                limit,
-            });
-        }
-
-        Ok(JobSplitResult {
-            total_records: total,
-            tasks,
-        })
+        // 委托给 RdbmsJob
+        self.rdbms_job.split(reader_threads).await
     }
 
     async fn execute_task(
@@ -113,106 +77,8 @@ impl Job<PipelineMessage> for DatabaseJob {
         task: Task,
         tx: mpsc::Sender<PipelineMessage>,
     ) -> Result<usize> {
-        use futures::StreamExt;
-
-        println!("📖 Reader-{} 启动 (OFFSET={}, LIMIT={})",
-                 task.task_id, task.offset, task.limit);
-
-        let db_config = Config::parse_db_config(&self.config.input)?;
-        let table = &db_config.table;
-
-        let sql = format!(
-            "SELECT * FROM {} LIMIT {} OFFSET {}",
-            table, task.limit, task.offset
-        );
-
-        let mut sent = 0;
-        let mut buffer = Vec::with_capacity(100);
-
-        match self.db_reader.pool() {
-            DbPool::Postgres(pg_pool) => {
-                let mut stream = sqlx::query(&sql).fetch(pg_pool);
-
-                while let Some(row_result) = stream.next().await {
-                    let row = row_result?;
-
-                    let mut obj = serde_json::Map::new();
-                    for (idx, col) in row.columns().iter().enumerate() {
-                        let col_name = col.name();
-                        let val: Option<String> = row.try_get(idx).ok();
-                        obj.insert(
-                            col_name.to_string(),
-                            val.map(JsonValue::String).unwrap_or(JsonValue::Null),
-                        );
-                    }
-
-                    buffer.push(JsonValue::Object(obj));
-
-                    if buffer.len() >= 100 {
-                        let mapped = apply_mapping(
-                            &buffer,
-                            &self.config.column_mapping,
-                            &self.config.column_types,
-                        )?;
-
-                        tx.send(PipelineMessage::DataBatch(mapped)).await?;
-                        sent += buffer.len();
-                        buffer.clear();
-
-                        println!("📖 Reader-{} 已发送 {} 条", task.task_id, sent);
-                    }
-                }
-
-                if !buffer.is_empty() {
-                    let mapped = apply_mapping(&buffer, &self.config.column_mapping, &self.config.column_types)?;
-                    tx.send(PipelineMessage::DataBatch(mapped)).await?;
-                    sent += buffer.len();
-                }
-            }
-
-            DbPool::Mysql(my_pool) => {
-                let mut stream = sqlx::query(&sql).fetch(my_pool);
-
-                while let Some(row_result) = stream.next().await {
-                    let row = row_result?;
-
-                    let mut obj = serde_json::Map::new();
-                    for (idx, col) in row.columns().iter().enumerate() {
-                        let col_name = col.name();
-                        let val: Option<String> = row.try_get(idx).ok();
-                        obj.insert(
-                            col_name.to_string(),
-                            val.map(JsonValue::String).unwrap_or(JsonValue::Null),
-                        );
-                    }
-
-                    buffer.push(JsonValue::Object(obj));
-
-                    if buffer.len() >= 100 {
-                        let mapped = apply_mapping(
-                            &buffer,
-                            &self.config.column_mapping,
-                            &self.config.column_types,
-                        )?;
-
-                        tx.send(PipelineMessage::DataBatch(mapped)).await?;
-                        sent += buffer.len();
-                        buffer.clear();
-
-                        println!("📖 Reader-{} 已发送 {} 条", task.task_id, sent);
-                    }
-                }
-
-                if !buffer.is_empty() {
-                    let mapped = apply_mapping(&buffer, &self.config.column_mapping, &self.config.column_types)?;
-                    tx.send(PipelineMessage::DataBatch(mapped)).await?;
-                    sent += buffer.len();
-                }
-            }
-        }
-
-        println!("✅ Reader-{} 完成，共发送 {} 条数据", task.task_id, sent);
-        Ok(sent)
+        // 委托给 RdbmsJob
+        self.rdbms_job.execute_task(task, tx).await
     }
 
     fn description(&self) -> String {
@@ -249,10 +115,10 @@ impl Job<PipelineMessage> for ApiJob {
         task: Task,
         tx: mpsc::Sender<PipelineMessage>,
     ) -> Result<usize> {
-        println!("📖 Reader-{} 启动 (API 数据源)", task.task_id);
+        println!("Reader-{} 启动 (API 数据源)", task.task_id);
 
         let items = fetch_from_api(&self.config).await?;
-        println!("📖 Reader-{} 获取了 {} 条数据", task.task_id, items.len());
+        println!("Reader-{} 获取了 {} 条数据", task.task_id, items.len());
 
         let mut sent = 0;
         for chunk in items.chunks(100) {
@@ -261,7 +127,7 @@ impl Job<PipelineMessage> for ApiJob {
             sent += chunk.len();
         }
 
-        println!("✅ Reader-{} 完成，共发送 {} 条数据", task.task_id, sent);
+        println!("Reader-{} 完成，共发送 {} 条数据", task.task_id, sent);
         Ok(sent)
     }
 
@@ -844,8 +710,8 @@ impl Pipeline {
     /// 执行管道
     pub async fn execute(&self) -> Result<PipelineStats> {
         let start_time = Instant::now();
-        println!("\n🚀 启动数据同步管道");
-        println!("📊 配置: {} Reader, {} Writer, Channel 缓冲 {}",
+        println!("\n启动数据同步管道");
+        println!("配置: {} Reader, {} Writer, Channel 缓冲 {}",
                  self.pipeline_config.reader_threads,
                  self.pipeline_config.writer_threads,
                  self.pipeline_config.channel_buffer_size);
@@ -857,21 +723,18 @@ impl Pipeline {
 
         let reader_handles = match &self.pipeline_config.data_source {
             DataSourceType::Database { .. } => {
-                println!("📊 数据库数据源，启动任务切分...");
+                println!("数据库数据源，启动任务切分...");
 
-                let db_reader: Arc<dyn DbReaderDriver<Pool = DbPool>> = Arc::new(
-                    CoreDbReaderDriver::new(Arc::clone(&self.pool)),
-                );
                 let job: Arc<dyn Job<PipelineMessage>> = Arc::new(DatabaseJob::new(
                     Arc::clone(&self.config),
-                    db_reader,
-                ));
+                    Arc::clone(&self.pool),
+                )?);
 
-                println!("📋 Job: {}", job.description());
+                println!("Job: {}", job.description());
 
                 let split_result = job.split(self.pipeline_config.reader_threads).await?;
-                println!("📊 总记录数: {}", split_result.total_records);
-                println!("📊 切分为 {} 个任务", split_result.tasks.len());
+                println!("总记录数: {}", split_result.total_records);
+                println!("切分为 {} 个任务", split_result.tasks.len());
 
                 let mut handles = Vec::new();
                 for task in split_result.tasks {
@@ -889,7 +752,7 @@ impl Pipeline {
             }
 
             DataSourceType::Api => {
-                println!("📊 API 数据源，使用单 Reader");
+                println!("API 数据源，使用单 Reader");
 
                 let job: Arc<dyn Job<PipelineMessage>> = Arc::new(ApiJob::new(Arc::clone(&self.config)));
                 println!("📋 Job: {}", job.description());
@@ -958,7 +821,7 @@ impl Pipeline {
         };
         stats.calculate_throughput();
 
-        println!("\n📊 同步完成");
+        println!("\n同步完成");
         println!("   读取: {} 条", stats.records_read);
         println!("   写入: {} 条", stats.records_written);
         println!("   失败: {} 条", stats.records_failed);
@@ -1036,7 +899,7 @@ impl Pipeline {
 
             // 关闭所有 Writer 的 Channel
             drop(writer_txs);
-            println!("📭 分发器: 已关闭所有 Writer Channel");
+            println!("分发器: 已关闭所有 Writer Channel");
         });
 
         writer_handles
@@ -1047,15 +910,15 @@ impl Pipeline {
 // 便捷入口函数
 // ==========================================
 
-/// 使用管道执行同步（默认配置）
+/// 使用管道执行同步（默认）
 pub async fn sync_with_pipeline(config: Config, pool: DbPool) -> Result<PipelineStats> {
     let pipeline_config = PipelineConfig::default();
     let pipeline = Pipeline::new(config, pool, pipeline_config);
     pipeline.execute().await
 }
 
-/// 使用管道执行同步（自定义配置）
-pub async fn sync_with_pipeline_custom(
+/// 使用管道执行同步（切分任务）
+pub async fn sync_with_pipeline_task(
     config: Config,
     pool: DbPool,
     pipeline_config: PipelineConfig,

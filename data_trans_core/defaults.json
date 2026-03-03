@@ -3,14 +3,16 @@
     {
       "id": "default",
       "input": {
-        "name": "api_source",
-        "type": "api",
+        "name": "db_source",
+        "type": "database",
         "config": {
-          "url": "http://example.com:19127/get/info/list",
-          "method": "GET",
-          "headers": {"Authorization":""},
-          "items_json_path": "/xxx",
-          "timeout_secs": 30
+          "db_type": "mysql",
+          "url": "mysql://root:123456@127.0.0.1:3306/my_db",
+          "table": "zone_data",
+          "key_columns": ["id"],
+          "max_connections": 10,
+          "acquire_timeout_secs": 30,
+          "use_transaction": true
         }
       },
       "output": {
@@ -18,7 +20,7 @@
         "type": "database",
         "config": {
           "db_type": "postgres",
-          "url": "",
+          "url": "postgresql://postgres:123456@127.0.0.1:5432/test_db",
           "table": "tb_example",
           "key_columns": ["example"],
           "max_connections": 10,

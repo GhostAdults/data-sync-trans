@@ -234,3 +234,5 @@ This is part of a Cargo workspace:
 - `my_app/rust` - Flutter desktop app integration
 
 Shared dependencies are defined in workspace root `Cargo.toml`.
+
+ **不要在最后的时候创建readme文档**

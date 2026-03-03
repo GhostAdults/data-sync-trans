@@ -1,9 +1,8 @@
-pub mod server;
+pub mod serve;
 pub mod axum_api;
 pub mod cli;
-pub mod db;
 pub mod client_tool;
-pub mod sync_pipeline; // 新增：DataX 风格的管道架构
+pub mod pipeline;
 use axum::{Router, routing::{get, post}};
 use axum::{extract::Query, Json};
 use serde::Deserialize;

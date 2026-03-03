@@ -15,13 +15,13 @@ pub struct JobSplitResult {
     pub tasks: Vec<Task>,
 }
 
-/// Job trait - 定义数据读取任务的通用接口
+/// Job trait - 任何reader 必须通过此处实现 Job trait 来提供切分和执行逻辑
 #[async_trait::async_trait]
 pub trait Job<M>: Send + Sync
 where
     M: Send + 'static,
 {
-    /// 切分任务为多个子任务
+    /// 切分任务
     async fn split(&self, reader_threads: usize) -> Result<JobSplitResult>;
 
     /// 执行单个任务，读取数据并发送到 Channel

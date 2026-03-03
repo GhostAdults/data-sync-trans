@@ -3,7 +3,7 @@ use axum::http::StatusCode;
 use super::{TablesQuery, DescribeQuery, GenMapQuery, SyncReq};
 use serde_json::Value;
 use crate::core::{ApiResp};
-use crate::core::server::{list_tables, sync_command, describe, gen_mapping};
+use crate::core::serve::{list_tables, sync_command, describe, gen_mapping};
 
 // get tables list
 pub async fn h_list_tables(Query(q): Query<TablesQuery>) -> (StatusCode, Json<ApiResp<Vec<String>>>) {
