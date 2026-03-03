@@ -154,7 +154,7 @@ pub fn sanitize_identifier(s: &str) -> Result<()> {
 pub fn read_config(path: PathBuf, task_id: Option<String>) -> Result<Config> {
     // 优先从内存中获取最新的系统配置（由 Watcher 维护）
     if let Some(cfg) = crate::get_system_config(task_id.as_deref()) {
-        return Ok(cfg);
+         return Ok(cfg);
     }
     // 尝试初始化一下，如果还没初始化。
     if init_system_config().is_some() {
@@ -167,7 +167,7 @@ pub fn read_config(path: PathBuf, task_id: Option<String>) -> Result<Config> {
 }
 
 pub fn read_defaluts_config(path: PathBuf) -> Result<Config> {
-         if let Some(cfg) = crate::get_default_system_config() {    
+         if let Some(cfg) = crate::get_default_system_config() {
             return Ok(cfg.clone());
         }
         bail!(format!("读取默认配置文件失败: {}", path.display()))

@@ -564,6 +564,7 @@ name = "data_trans_core"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "axum",
  "chrono",
  "clap",
@@ -571,6 +572,7 @@ dependencies = [
  "dashmap",
  "dirs-next",
  "flutter_rust_bridge",
+ "futures",
  "nom",
  "notify",
  "parking_lot",

@@ -98,7 +98,7 @@ fn eval_compare(expr: &Expr, ctx: &EvalContext, registry: &FunctionRegistry) -> 
                 },
                 CompareOp::Lt => {
                     match (left_val.as_i64(), right_val.as_i64()) {
-                        (Some(l), Some(r)) => l < r,
+                        (Some(l), Some(r)) => l < r,  
                         _ => false,
                     }
                 },
@@ -167,7 +167,7 @@ impl SyncEngine {
         let mut target_row = HashMap::new();
 
         for (target_field, ast) in &self.mappings {
-            let result = self.evaluator.eval(ast, &ctx);
+            let result = self.evaluator.eval(ast, &ctx); // 节点处理函数
             target_row.insert(target_field.clone(), result);
         }
 

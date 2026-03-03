@@ -14,7 +14,7 @@ use anyhow::{Context, Result};
 use anyhow::*;
 use crate::{detect_db_kind,get_config_manager};
 use sqlx::{Row, PgPool, MySqlPool};
-use super::{TablesQuery, DescribeQuery, GenMapQuery, SyncReq, BaseDbQuery,CreateConfigReq,UpdateConfigReq, MappingConfig};
+use super::{TablesQuery, DescribeQuery, GenMapQuery, BaseDbQuery,CreateConfigReq,UpdateConfigReq, MappingConfig};
 use crate::app_config::value::ConfigValue;
 
 use std::collections::HashMap;
@@ -34,8 +34,10 @@ pub trait DbParams {
         if let Some(mgr) = get_config_manager() {
             let mgr = mgr.read();
             if let Ok(cfg) = Config::from_manager(&mgr, task_id) {
-                if !cfg.db.url.is_empty() {
-                     return Ok(cfg.db.url);
+                if let Ok(db_config) = Config::parse_db_config(&cfg.output) {
+                    if !db_config.url.is_empty() {
+                        return Ok(db_config.url);
+                    }
                 }
             }
         }
@@ -46,13 +48,13 @@ pub trait DbParams {
         if let Some(s) = self.db_type_opt() {
             if !s.is_empty() { return Some(s.to_string()); }
         }
-        
+
         let task_id = self.task_id_opt().unwrap_or("default");
 
         if let Some(mgr) = crate::get_config_manager() {
              let mgr = mgr.read();
              if let Ok(cfg) = Config::from_manager(&mgr, task_id) {
-                 return cfg.db_type;
+                 return Config::get_source_db_type(&cfg.output);
              }
         }
         None
@@ -150,7 +152,7 @@ fn to_typed_value(v: &JsonValue, ty: Option<&str>) -> Result<TypedVal> {
         }
         "json" => {
             let s = serde_json::to_string(v)?;
-            Ok(TypedVal::Text(Some(s)))
+            Ok(TypedVal::Text(s))
         }
         "timestamp" => {
             if v.is_null() {
@@ -170,11 +172,11 @@ fn to_typed_value(v: &JsonValue, ty: Option<&str>) -> Result<TypedVal> {
         }
         _ => {
             if v.is_null() {
-                Ok(TypedVal::Text(None))
+                Ok(TypedVal::Text("".to_string()))
             } else if let Some(s) = v.as_str() {
-                Ok(TypedVal::Text(Some(s.to_string())))
+                Ok(TypedVal::Text(s.to_string()))
             } else {
-                Ok(TypedVal::Text(Some(v.to_string())))
+                Ok(TypedVal::Text(v.to_string()))
             }
         }
     }
@@ -266,159 +268,44 @@ fn guess_type(sql_type: &str) -> &'static str {
 }
 
 pub async fn get_pool_from_config(cfg: &Config) -> Result<DbPool> {
-    let kind = detect_db_kind(&cfg.db.url, cfg.db_type.as_ref().and_then(|s| {
+    let db_config = Config::parse_db_config(&cfg.output)?;
+    let db_type_str = Config::get_source_db_type(&cfg.output);
+
+    let kind = detect_db_kind(&db_config.url, db_type_str.as_ref().and_then(|s: &String| {
         if s.eq_ignore_ascii_case("postgres") { Some(DbKind::Postgres) }
         else if s.eq_ignore_ascii_case("mysql") { Some(DbKind::Mysql) }
         else { None }
     })).context("无法识别数据库类型")?;
-    let max_conns = cfg.db.max_connections.unwrap_or(20);
-    let acq_timeout = cfg.db.acquire_timeout_secs.unwrap_or(60);
-    get_db_pool(&cfg.db.url, kind, max_conns, Some(acq_timeout)).await
+    let max_conns = db_config.max_connections.unwrap_or(20);
+    let acq_timeout = db_config.acquire_timeout_secs.unwrap_or(60);
+    get_db_pool(&db_config.url, kind, max_conns, Some(acq_timeout)).await
 }
 
-// 同步数据函数
+/// 同步数据函数（使用 Pipeline）
 pub async fn sync(cfg: &Config, pool: &DbPool) -> Result<()> {
-    let kind = match pool {
-        DbPool::Postgres(_) => DbKind::Postgres,
-        DbPool::Mysql(_) => DbKind::Mysql,
+    use crate::core::sync_pipeline::{sync_with_pipeline_custom, PipelineConfig, DataSourceType};
+
+    // 根据 input.type 判断数据源类型
+    let data_source = match cfg.input.source_type.as_str() {
+        "api" => DataSourceType::Api,
+        "database" => DataSourceType::Database {
+            query: String::new(),
+            limit: None,
+            offset: None,
+        },
+        _ => DataSourceType::Api, // 默认 API
     };
-    let use_tx = cfg.db.use_transaction.unwrap_or(true);
-    let (is_pg, pg_pool, my_pool) = match pool {
-        DbPool::Postgres(p) => (true, Some(p), None),
-        DbPool::Mysql(p) => (false, None, Some(p)),
+
+    let pipeline_config = PipelineConfig {
+        reader_threads: 1,
+        writer_threads: 4,
+        channel_buffer_size: 1000,
+        batch_size: cfg.batch_size.unwrap_or(100),
+        use_transaction: true,
+        data_source,
     };
-    let resp = fetch_json(&cfg.api).await?;
-    let items = if let Some(p) = &cfg.api.items_json_path {
-        let v = extract_by_path(&resp, p).context("未找到 items_json_path 指定的数据")?;
-        match v {
-            JsonValue::Array(a) => a.clone(),
-            _ => bail!("items_json_path 需指向数组"),
-        }
-    } else {
-        match &resp {
-            JsonValue::Array(a) => a.clone(),
-            JsonValue::Object(o) => {
-                let mut arr = None;
-                for (_k, v) in o {
-                    if let JsonValue::Array(a) = v {
-                        arr = Some(a.clone());
-                        break;
-                    }
-                }
-                arr.context("响应顶层不是数组，且未提供 items_json_path")?
-            }
-            _ => bail!("响应不是数组或对象"),
-        }
-    };
-    let cols: Vec<String> = cfg.column_mapping.keys().cloned().collect();
-    let key_cols = cfg.db.key_columns.clone().unwrap_or_default();
-    let (keys, nonkeys) = split_keys_nonkeys(&cols, &key_cols);
-    let mode = cfg.mode.as_deref().unwrap_or("insert");
-    let batch_size = cfg.batch_size.unwrap_or(10);
-    if use_tx && is_pg {
-        let pg_pool = pg_pool.unwrap();
-        let mut start = 0usize;
-        while start < items.len() {
-            let end = (start + batch_size).min(items.len());
-            let mut tx = pg_pool.begin().await?;
-            for item in items[start..end].iter() {
-                let mut values = Vec::<TypedVal>::new();
-                for c in &cols {
-                    let p = cfg.column_mapping.get(c).unwrap();
-                    let v = extract_by_path(item, p).unwrap_or(&JsonValue::Null);
-                    let t = cfg.column_types.as_ref().and_then(|m| m.get(c)).map(|s| s.as_str());
-                    let tv = to_typed_value(v, t)?;
-                    values.push(tv);
-                }
-                let mut sql = String::new();
-                sql.push_str("insert into ");
-                sql.push_str(&cfg.db.table);
-                sql.push_str(" (");
-                sql.push_str(&cols.join(", "));
-                sql.push_str(") values (");
-                sql.push_str(&build_placeholders(kind, cols.len(), 1));
-                sql.push(')');
-                if mode == "upsert" {
-                    if !keys.is_empty() {
-                        sql.push_str(" on conflict (");
-                        sql.push_str(&keys.join(", "));
-                        sql.push_str(") do update set ");
-                        let mut sets = Vec::new();
-                        for c in &nonkeys {
-                            sets.push(format!("{} = excluded.{}", c, c));
-                        }
-                        sql.push_str(&sets.join(", "));
-                    }
-                }
-                let mut q = sqlx::query(&sql);
-                for v in values {
-                    match v {
-                        TypedVal::I64(n) => q = q.bind(n),
-                        TypedVal::F64(n) => q = q.bind(n),
-                        TypedVal::Bool(b) => q = q.bind(b),
-                        TypedVal::OptI64(n) => q = q.bind(n),
-                        TypedVal::OptF64(n) => q = q.bind(n),
-                        TypedVal::OptBool(n) => q = q.bind(n),
-                        TypedVal::OptNaiveTs(n) => q = q.bind(n),
-                        TypedVal::Text(s) => q = q.bind(s),
-                    }
-                }
-                q.execute(&mut *tx).await?;
-            }
-            tx.commit().await?;
-            start = end;
-            println!("{:?}", format!("已同步 {} 条数据", end));
-        }
-    } else if use_tx && !is_pg {
-        let my_pool = my_pool.unwrap();
-        let mut start = 0usize;
-        while start < items.len() {
-            let end = (start + batch_size).min(items.len());
-            let mut tx = my_pool.begin().await?;
-            for item in items[start..end].iter() {
-                let mut values = Vec::<TypedVal>::new();
-                for c in &cols {
-                    let p = cfg.column_mapping.get(c).unwrap();
-                    let v = extract_by_path(item, p).unwrap_or(&JsonValue::Null);
-                    let t = cfg.column_types.as_ref().and_then(|m| m.get(c)).map(|s| s.as_str());
-                    let tv = to_typed_value(v, t)?;
-                    values.push(tv);
-                }
-                let mut sql = String::new();
-                sql.push_str("insert into ");
-                sql.push_str(&cfg.db.table);
-                sql.push_str(" (");
-                sql.push_str(&cols.join(", "));
-                sql.push_str(") values (");
-                sql.push_str(&build_placeholders(kind, cols.len(), 1));
-                sql.push(')');
-                if mode == "upsert" {
-                    sql.push_str(" on duplicate key update ");
-                    let mut sets = Vec::new();
-                    for c in &nonkeys {
-                        sets.push(format!("{} = values({})", c, c));
-                    }
-                    sql.push_str(&sets.join(", "));
-                }
-                let mut q = sqlx::query(&sql);
-                for v in values {
-                    match v {
-                        TypedVal::I64(n) => q = q.bind(n),
-                        TypedVal::F64(n) => q = q.bind(n),
-                        TypedVal::Bool(b) => q = q.bind(b),
-                        TypedVal::OptI64(n) => q = q.bind(n),
-                        TypedVal::OptF64(n) => q = q.bind(n),
-                        TypedVal::OptBool(n) => q = q.bind(n),
-                        TypedVal::OptNaiveTs(n) => q = q.bind(n),
-                        TypedVal::Text(s) => q = q.bind(s),
-                    }
-                }
-                q.execute(&mut *tx).await?;
-            }
-            tx.commit().await?;
-            start = end;
-        }
-    } 
+
+    let _stats = sync_with_pipeline_custom(cfg.clone(), pool.clone(), pipeline_config).await?;
     Ok(())
 }
 
@@ -508,7 +395,9 @@ pub async fn sync_command(task_id: String, mapping: MappingConfig) -> (StatusCod
         cfg.mode = Some(m);
     }
     if let Some(k) = mapping.key_columns {
-        cfg.db.key_columns = Some(k);
+        if let Some(obj) = cfg.output.config.as_object_mut() {
+            obj.insert("key_columns".to_string(), serde_json::json!(k));
+        }
     }
     
     // Get pool from config

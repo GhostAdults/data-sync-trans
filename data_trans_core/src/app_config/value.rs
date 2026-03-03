@@ -33,6 +33,27 @@ impl ConfigValue {
             _ => None,
         }
     }
+
+    pub fn as_value(&self) -> serde_json::Value {
+        match self {
+            ConfigValue::Bool(v) => serde_json::Value::Bool(*v),
+            ConfigValue::Int(v) => serde_json::Value::Number(serde_json::Number::from(*v)),
+            ConfigValue::Float(v) => {
+                serde_json::Value::Number(serde_json::Number::from_f64(*v).unwrap_or(serde_json::Number::from(0)))
+            }
+            ConfigValue::String(v) => serde_json::Value::String(v.clone()),
+            ConfigValue::Array(arr) => {
+                serde_json::Value::Array(arr.iter().map(|v| v.as_value()).collect())
+            }
+            ConfigValue::Object(map) => {
+                let obj: serde_json::Map<String, serde_json::Value> = map
+                    .iter()
+                    .map(|(k, v)| (k.clone(), v.as_value()))
+                    .collect();
+                serde_json::Value::Object(obj)
+            }
+        }
+    }
 }
 impl From<serde_json::Value> for ConfigValue {
     fn from(value: serde_json::Value) -> Self {

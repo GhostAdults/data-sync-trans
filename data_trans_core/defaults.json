@@ -2,17 +2,29 @@
   "tasks": [
     {
       "id": "default",
-      "db_type": "",
-      "db": {
-        "url": "",
-        "table": "tb_example",
-        "key_columns": ["example"]
+      "input": {
+        "name": "api_source",
+        "type": "api",
+        "config": {
+          "url": "http://example.com:19127/get/info/list",
+          "method": "GET",
+          "headers": {"Authorization":""},
+          "items_json_path": "/xxx",
+          "timeout_secs": 30
+        }
       },
-      "api": {
-        "url": "http://example.com:19127/get/info/list",
-        "method": "GET",
-        "headers": {"Authorization":""},
-        "items_json_path": "/xxx"
+      "output": {
+        "name": "db_target",
+        "type": "database",
+        "config": {
+          "db_type": "postgres",
+          "url": "",
+          "table": "tb_example",
+          "key_columns": ["example"],
+          "max_connections": 10,
+          "acquire_timeout_secs": 30,
+          "use_transaction": true
+        }
       },
       "column_mapping": {
         "example": "example"

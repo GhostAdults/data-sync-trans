@@ -77,9 +77,10 @@ pub fn run_cli(cmd: Commands) {
      match cmd {
         Commands::TestApi { config } => {
             let cfg = read_config(config).unwrap();
-            let v = fetch_json(&cfg.api).unwrap();
+            let api_config = Config::parse_api_config(&cfg.input).unwrap();
+            let v = fetch_json(&api_config).unwrap();
             println!("{}", serde_json::to_string_pretty(&v).unwrap());
-            let items = if let Some(p) = &cfg.api.items_json_path {
+            let items = if let Some(p) = &api_config.items_json_path {
                 extract_by_path(&v, p).unwrap_or(&Value::Null).clone()
             } else {
                 v.clone()
@@ -268,29 +269,15 @@ fn read_config(path: PathBuf) -> Result<Config> {
             serde_json::from_value(v)
         })
         .unwrap_or_else(|_| {
-            Config {
-                id: "default".to_string(),
-                db_type: None,
-                db: Default::default(),
-                api: crate::core::ApiConfig {
-                    url: "".to_string(),
-                    method: None,
-                    headers: None,
-                    body: None,
-                    items_json_path: None,
-                    timeout_secs: None,
-                },
-                column_mapping: std::collections::BTreeMap::new(),
-                column_types: None,
-                mode: None,
-                batch_size: None,
-            }
+            Config::default_with_id("default".to_string())
         });
-    sanitize_identifier(&cfg.db.table)?;
+
+    let db_config = Config::parse_db_config(&cfg.output)?;
+    sanitize_identifier(&db_config.table)?;
     for k in cfg.column_mapping.keys() {
         sanitize_identifier(k)?;
     }
-    if let Some(keys) = &cfg.db.key_columns {
+    if let Some(keys) = &db_config.key_columns {
         for k in keys {
             sanitize_identifier(k)?;
         }

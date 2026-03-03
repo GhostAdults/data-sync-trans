@@ -16,7 +16,7 @@ pub fn op_upper(args: &[super::ast::Expr], eval_fn: &dyn Fn(&super::ast::Expr) -
     Value::String(s.to_uppercase())
 }
 
-pub fn op_concat(args: &[super::ast::Expr], eval_fn: &dyn Fn(&super::ast::Expr) -> Value) -> Value {
+pub fn op_concat(args: &[super::ast::Expr], eval_fn: &dyn Fn(&super::ast::Expr) -> Value) -> Value {   
     if args.len() < 2 {
         return Value::Null;
     }

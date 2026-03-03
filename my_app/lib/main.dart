@@ -41,7 +41,7 @@ Future<void> main() async {
     ));
 }
 
-class DataTransDesktopUI extends StatelessWidget {
+class DataTransDesktopUI extends StatefulWidget {
   final String result;
   final String configText;
   final String tablesText;
@@ -54,17 +54,32 @@ class DataTransDesktopUI extends StatelessWidget {
   });
 
   @override
+  State<DataTransDesktopUI> createState() => _DataTransDesktopUIState();
+}
+
+class _DataTransDesktopUIState extends State<DataTransDesktopUI> {
+  bool _isDark = true;
+
+  void _toggleTheme() {
+    setState(() {
+      _isDark = !_isDark;
+    });
+  }
+
+  @override
   Widget build(BuildContext context) {
     return FluentApp(
       debugShowCheckedModeBanner: false,
       theme: FluentThemeData(
         accentColor: Colors.teal,
-        brightness: Brightness.light,
+        brightness: _isDark ? Brightness.dark : Brightness.light,
       ),
       home: MainScreen(
-        result: result,
-        configText: configText,
-        tablesText: tablesText,
+        result: widget.result,
+        configText: widget.configText,
+        tablesText: widget.tablesText,
+        isDark: _isDark,
+        onToggleTheme: _toggleTheme,
       ),
     );
   }
@@ -74,12 +89,16 @@ class MainScreen extends StatefulWidget {
   final String result;
   final String configText;
   final String tablesText;
+  final bool isDark;
+  final VoidCallback onToggleTheme;
 
   const MainScreen({
     super.key,
     required this.result,
     required this.configText,
     required this.tablesText,
+    required this.isDark,
+    required this.onToggleTheme,
   });
 
   @override
@@ -134,22 +153,7 @@ class _MainScreenState extends State<MainScreen> {
         actions: Row(
           mainAxisAlignment: MainAxisAlignment.end,
           children: [
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 16),
-              alignment: Alignment.center,
-              child: Row(
-                children: [
-                  const Icon(FluentIcons.calculator_addition, size: 16),
-                  const SizedBox(width: 8),
-                  Text(
-                    'Rust Add Result: ${widget.result}',
-                    style: const TextStyle(fontWeight: FontWeight.bold),
-                  ),
-                ],
-              ),
-            ),
             const WindowButtons(),
-            const SizedBox(width: 12),
           ],
         ),
       ),
@@ -157,12 +161,16 @@ class _MainScreenState extends State<MainScreen> {
         selected: _selectedIndex,
         onChanged: (index) {
           if (index == 1) {
-            _showConfigDialog();
-          } else {
-            setState(() {
-              _selectedIndex = index;
-            });
+            widget.onToggleTheme();
+            return;
           }
+          if (index == 2) {
+            _showConfigDialog();
+            return;
+          }
+          setState(() {
+            _selectedIndex = index;
+          });
         },
         displayMode: PaneDisplayMode.compact,
         items: [
@@ -170,6 +178,15 @@ class _MainScreenState extends State<MainScreen> {
             icon: const Icon(FluentIcons.table),
             title: const Text('Tables'),
             body: _buildTablesView(),
+          ),
+        ],
+        footerItems: [
+          PaneItem(
+            icon: Icon(
+              widget.isDark ? FluentIcons.clear_night : FluentIcons.sunny,
+            ),
+            title: const Text('Theme'),
+            body: const SizedBox.shrink(),
           ),
           PaneItem(
             icon: const Icon(FluentIcons.settings),
@@ -231,34 +248,63 @@ class WindowButtons extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Row(
+      mainAxisSize: MainAxisSize.min,
       children: [
-        IconButton(
-          icon: const Icon(FluentIcons.chrome_minimize),
-          onPressed: () => windowManager.minimize(),
-        ),
-        IconButton(
-          icon: const Icon(FluentIcons.chrome_restore),
-          onPressed: () async {
-            if (await windowManager.isMaximized()) {
-              windowManager.unmaximize();
-            } else {
-              windowManager.maximize();
-            }
-          },
-        ),
-        IconButton(
-          icon: const Icon(FluentIcons.chrome_close),
-          style: ButtonStyle(
-            foregroundColor: ButtonState.resolveWith((states) {
-              if (states.isHovering) return Colors.white;
-              return Colors.black;
-            }),
-            backgroundColor: ButtonState.resolveWith((states) {
-              if (states.isHovering) return Colors.red;
-              return Colors.transparent;
-            }),
+        SizedBox(
+          width: 46,
+          height: 32,
+          child: IconButton(
+            icon: const Icon(FluentIcons.chrome_minimize, size: 16),
+            style: ButtonStyle(
+              shape: ButtonState.all(
+                const RoundedRectangleBorder(borderRadius: BorderRadius.zero),
+              ),
+              padding: ButtonState.all(EdgeInsets.zero),
+            ),
+            onPressed: () => windowManager.minimize(),
           ),
-          onPressed: () => windowManager.close(),
+        ),
+        SizedBox(
+          width: 46,
+          height: 32,
+          child: IconButton(
+            icon: const Icon(FluentIcons.chrome_restore, size: 16),
+            style: ButtonStyle(
+              shape: ButtonState.all(
+                const RoundedRectangleBorder(borderRadius: BorderRadius.zero),
+              ),
+              padding: ButtonState.all(EdgeInsets.zero),
+            ),
+            onPressed: () async {
+              if (await windowManager.isMaximized()) {
+                windowManager.unmaximize();
+              } else {
+                windowManager.maximize();
+              }
+            },
+          ),
+        ),
+        SizedBox(
+          width: 46,
+          height: 32,
+          child: IconButton(
+            icon: const Icon(FluentIcons.chrome_close, size: 16),
+            style: ButtonStyle(
+              shape: ButtonState.all(
+                const RoundedRectangleBorder(borderRadius: BorderRadius.zero),
+              ),
+              padding: ButtonState.all(EdgeInsets.zero),
+              foregroundColor: ButtonState.resolveWith((states) {
+                if (states.isHovering) return Colors.white;
+                return Colors.white;
+              }),
+              backgroundColor: ButtonState.resolveWith((states) {
+                if (states.isHovering) return Colors.red;
+                return Colors.transparent;
+              }),
+            ),
+            onPressed: () => windowManager.close(),
+          ),
         ),
       ],
     );

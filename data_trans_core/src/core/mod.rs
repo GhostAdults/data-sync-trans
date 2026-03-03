@@ -3,6 +3,7 @@ pub mod axum_api;
 pub mod cli;
 pub mod db;
 pub mod client_tool;
+pub mod sync_pipeline; // 新增：DataX 风格的管道架构
 use axum::{Router, routing::{get, post}};
 use axum::{extract::Query, Json};
 use serde::Deserialize;
@@ -18,8 +19,27 @@ use crate::app_config::value::ConfigValue;
 use anyhow::{Result, bail, Context as _};
 
 
-#[derive(Clone, Debug, Deserialize,Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct DataSourceConfig {
+    pub name: String,
+    #[serde(rename = "type")]
+    pub source_type: String,
+    pub config: Value,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Config {
+    pub id: String,
+    pub input: DataSourceConfig,
+    pub output: DataSourceConfig,
+    pub column_mapping: BTreeMap<String, String>,
+    pub column_types: Option<BTreeMap<String, String>>,
+    pub mode: Option<String>,
+    pub batch_size: Option<usize>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct LegacyConfig {
     pub id: String,
     pub db_type: Option<String>,
     pub db: DbConfig,
@@ -47,64 +67,36 @@ impl Config {
                 false
             }
         }).context(format!("未找到 ID 为 {} 的任务配置", task_id))?;
-        
+
         let map = if let ConfigValue::Object(m) = task_val { m } else { bail!("配置格式错误") };
 
         let get_str = |k: &str| map.get(k).and_then(|v| v.as_str()).map(|s| s.to_string());
         let get_i64 = |k: &str| map.get(k).and_then(|v| v.as_i64());
-        let get_bool = |k: &str| map.get(k).and_then(|v| v.as_bool());
-        let _ = get_bool; // 防止未使用警告
 
-        let db_type = get_str("db_type");
-        
-        let db_val = map.get("db").and_then(|v| if let ConfigValue::Object(m) = v { Some(m) } else { None });
-        let db_config = if let Some(db_map) = db_val {
-            DbConfig {
-                url: db_map.get("url").and_then(|v| v.as_str()).unwrap_or_default().to_string(),
-                table: db_map.get("table").and_then(|v| v.as_str()).unwrap_or_default().to_string(),
-                key_columns: None, 
-                max_connections: db_map.get("max_connections").and_then(|v| v.as_i64()).map(|i| i as u32),
-                acquire_timeout_secs: db_map.get("acquire_timeout_secs").and_then(|v| v.as_i64()).map(|i| i as u64),
-                use_transaction: db_map.get("use_transaction").and_then(|v| v.as_bool()),
-            }
-        } else {
-            DbConfig::default()
+        let input: &std::collections::HashMap<String, ConfigValue> = map.get("input")
+            .and_then(|v| match v {
+                ConfigValue::Object(obj) => Some(obj),
+                _ => None,
+            })
+            .context("未找到 input 配置")?;
+
+        let output: &std::collections::HashMap<String, ConfigValue> = map.get("output")
+            .and_then(|v| match v {
+                ConfigValue::Object(obj) => Some(obj),
+                _ => None,
+            })
+            .context("未找到 output 配置")?;
+
+        let input_config = DataSourceConfig {
+            name: input.get("name").and_then(|v| v.as_str()).unwrap_or("input").to_string(),
+            source_type: input.get("type").and_then(|v| v.as_str()).unwrap_or("api").to_string(),
+            config: input.get("config").map(|v| v.as_value()).unwrap_or(serde_json::Value::Null),
         };
 
-        let api_val = map.get("api").and_then(|v| if let ConfigValue::Object(m) = v { Some(m) } else { None });
-        let api_config = if let Some(api_map) = api_val {
-            let headers = api_map.get("headers").and_then(|v| {
-                if let ConfigValue::Object(h) = v {
-                    let mut hm = BTreeMap::new();
-                    for (k, v) in h {
-                        if let Some(s) = v.as_str() {
-                            hm.insert(k.clone(), s.to_string());
-                        }
-                    }
-                    Some(hm)
-                } else {
-                    None
-                }
-            });
-
-            ApiConfig {
-                url: api_map.get("url").and_then(|v| v.as_str()).unwrap_or_default().to_string(),
-                method: api_map.get("method").and_then(|v| v.as_str()).map(|s| s.to_string()),
-                headers,
-                body: None,
-                items_json_path: api_map.get("items_json_path").and_then(|v| v.as_str()).map(|s| s.to_string()),
-                timeout_secs: api_map.get("timeout_secs").and_then(|v| v.as_i64()).map(|i| i as u64),
-            }
-        } else {
-            // 提供一个默认的空 API 配置，避免 panic
-            ApiConfig {
-                url: "".to_string(),
-                method: None,
-                headers: None,
-                body: None,
-                items_json_path: None,
-                timeout_secs: None,
-            }
+        let output_config = DataSourceConfig {
+            name: output.get("name").and_then(|v| v.as_str()).unwrap_or("output").to_string(),
+            source_type: output.get("type").and_then(|v| v.as_str()).unwrap_or("database").to_string(),
+            config: output.get("config").map(|v| v.as_value()).unwrap_or(serde_json::Value::Null),
         };
 
         let batch_size = get_i64("batch_size").map(|i| i as usize);
@@ -131,14 +123,109 @@ impl Config {
 
         Ok(Self {
             id: task_id.to_string(),
-            db_type,
-            db: db_config,
-            api: api_config,
+            input: input_config,
+            output: output_config,
             column_mapping,
             column_types,
             mode,
             batch_size,
         })
+    }
+
+    pub fn parse_api_config(source: &DataSourceConfig) -> Result<ApiConfig> {
+        let cfg: &Value = &source.config;
+        let url = cfg.get("url").and_then(|v| v.as_str()).unwrap_or_default().to_string();
+        let method = cfg.get("method").and_then(|v| v.as_str()).map(|s| s.to_string());
+        let items_json_path = cfg.get("items_json_path").and_then(|v| v.as_str()).map(|s| s.to_string());
+        let timeout_secs = cfg.get("timeout_secs").and_then(|v| v.as_u64());
+
+        let headers = cfg.get("headers").and_then(|v| {
+            if let serde_json::Value::Object(h) = v {
+                let mut hm = BTreeMap::new();
+                for (k, v) in h {
+                    if let Some(s) = v.as_str() {
+                        hm.insert(k.clone(), s.to_string());
+                    }
+                }
+                Some(hm)
+            } else {
+                None
+            }
+        });
+
+        Ok(ApiConfig {
+            url,
+            method,
+            headers,
+            body: None,
+            items_json_path,
+            timeout_secs,
+        })
+    }
+
+    pub fn parse_db_config(source: &DataSourceConfig) -> Result<DbConfig> {
+        let cfg = &source.config;
+        let url = cfg.get("url").and_then(|v| v.as_str()).unwrap_or_default().to_string();
+        let table = cfg.get("table").and_then(|v| v.as_str()).unwrap_or_default().to_string();
+
+        let key_columns = cfg.get("key_columns").and_then(|v| {
+            if let serde_json::Value::Array(arr) = v {
+                Some(arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
+            } else {
+                None
+            }
+        });
+
+        let max_connections = cfg.get("max_connections").and_then(|v| v.as_u64()).map(|i| i as u32);
+        let acquire_timeout_secs = cfg.get("acquire_timeout_secs").and_then(|v| v.as_u64());
+        let use_transaction = cfg.get("use_transaction").and_then(|v| v.as_bool());
+
+        Ok(DbConfig {
+            url,
+            table,
+            key_columns,
+            max_connections,
+            acquire_timeout_secs,
+            use_transaction,
+        })
+    }
+
+    pub fn get_source_db_type(source: &DataSourceConfig) -> Option<String> {
+        source.config.get("db_type").and_then(|v| v.as_str()).map(|s| s.to_string())
+    }
+
+    pub fn default_with_id(id: String) -> Self {
+        Self {
+            id,
+            input: DataSourceConfig {
+                name: "api_source".to_string(),
+                source_type: "api".to_string(),
+                config: serde_json::json!({
+                    "url": "",
+                    "method": "GET",
+                    "headers": {},
+                    "items_json_path": null,
+                    "timeout_secs": 30
+                }),
+            },
+            output: DataSourceConfig {
+                name: "db_target".to_string(),
+                source_type: "database".to_string(),
+                config: serde_json::json!({
+                    "db_type": "postgres",
+                    "url": "",
+                    "table": "",
+                    "key_columns": [],
+                    "max_connections": 10,
+                    "acquire_timeout_secs": 30,
+                    "use_transaction": true
+                }),
+            },
+            column_mapping: BTreeMap::new(),
+            column_types: None,
+            mode: Some("insert".to_string()),
+            batch_size: Some(100),
+        }
     }
 }
 
@@ -172,8 +259,13 @@ impl BaseDbQuery {
     pub fn resolve_url(&self) -> Result<String> {
         if let Some(url) = self.db_url.as_ref().filter(|s| !s.is_empty()) {
             Ok(url.clone())
-        } else if let Some(url) = crate::get_system_config(self.task_id.as_deref()).and_then(|c| if c.db.url.is_empty() { None } else { Some(c.db.url) }) {
-            Ok(url)
+        } else if let Some(cfg) = crate::get_system_config(self.task_id.as_deref()) {
+            let db_config = Config::parse_db_config(&cfg.output)?;
+            if !db_config.url.is_empty() {
+                Ok(db_config.url)
+            } else {
+                bail!("missing db.url in query or config")
+            }
         } else {
             bail!("missing db.url in query or config")
         }
@@ -185,9 +277,8 @@ impl BaseDbQuery {
                 return Some(t.clone());
             }
         }
-        // Fallback to system config
         if let Some(cfg) = crate::get_system_config(self.task_id.as_deref()) {
-            return cfg.db_type;
+            return Config::get_source_db_type(&cfg.output);
         }
         None
     }
@@ -218,6 +309,7 @@ pub struct ColInfo {
 
 pub type OptionalString = Option<String>;
 
+#[derive(Debug, Clone)]
 pub enum TypedVal {
     I64(i64),
     F64(f64),
@@ -226,7 +318,7 @@ pub enum TypedVal {
     OptF64(Option<f64>),
     OptBool(Option<bool>),
     OptNaiveTs(Option<NaiveDateTime>),
-    Text(OptionalString),
+    Text(String),
 }
 
 #[derive(Clone, Debug, Deserialize)]
