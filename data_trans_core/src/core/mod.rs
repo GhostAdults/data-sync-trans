@@ -1,6 +1,8 @@
 pub mod axum_api;
 pub mod cli;
 pub mod pipeline;
+pub mod registry;
+pub mod runner;
 pub mod serve;
 use axum::{extract::Query, Json};
 use axum::{

@@ -1,12 +1,9 @@
 pub mod client_tool;
-pub mod dbpool;
-pub mod dbutil;
-pub mod pipeline_mapper;
 pub mod reader_split_util;
 
-// Re-export commonly used types from local modules
-pub use dbpool::{DbKind, DbPool, DbConfig, get_db_pool, detect_db_kind, get_pool_from_query};
-pub use dbutil::{DbParams, get_pool_from_config, ResolveDbQuery, dbkind_from_opt_str, build_query_sql};
-
-pub use crate::RowMapper;
-pub use pipeline_mapper::PipelineRowMapper;
+// Re-export commonly used types from data_trans_common
+pub use data_trans_common::db::{
+    build_query_sql, build_select_query, dbkind_from_opt_str, detect_db_kind, get_db_pool,
+    get_pool_from_config, get_pool_from_query, DbKind, DbParams, DbPool, PoolConfig as DbConfig,
+    ResolveDbQuery,
+};

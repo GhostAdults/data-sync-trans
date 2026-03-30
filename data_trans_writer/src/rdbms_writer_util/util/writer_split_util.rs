@@ -5,10 +5,10 @@ use std::sync::Arc;
 use data_trans_common::job_config::DbConfig;
 use data_trans_common::JobConfig;
 
-use crate::types::{JobSplitResult, WriteMode, WriteTask};
+use crate::types::{SplitResult, WriteMode, WriteTask};
 
 /// 切分 Writer 任务
-pub fn do_split(original_config: &Arc<JobConfig>, writer_threads: usize) -> JobSplitResult {
+pub fn do_split(original_config: &Arc<JobConfig>, writer_threads: usize) -> SplitResult {
     let mode = original_config
         .mode
         .as_deref()
@@ -30,5 +30,5 @@ pub fn do_split(original_config: &Arc<JobConfig>, writer_threads: usize) -> JobS
         })
         .collect();
 
-    JobSplitResult { tasks }
+    SplitResult { tasks }
 }

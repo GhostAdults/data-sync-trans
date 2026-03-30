@@ -1,6 +1,6 @@
 use crate::app_config::manager::ConfigManager;
 use crate::app_config::value::ConfigValue;
-use anyhow::{Context as _, Result, bail};
+use anyhow::{bail, Context as _, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -15,6 +15,34 @@ pub struct JobConfig {
     pub column_types: Option<BTreeMap<String, String>>,
     pub mode: Option<String>,
     pub batch_size: Option<usize>,
+    /// Reader 线程数
+    #[serde(default = "default_reader_threads")]
+    pub reader_threads: usize,
+    /// Writer 线程数
+    #[serde(default = "default_writer_threads")]
+    pub writer_threads: usize,
+    /// Channel 缓冲区大小
+    #[serde(default = "default_channel_buffer_size")]
+    pub channel_buffer_size: usize,
+    /// 是否使用事务
+    #[serde(default = "default_use_transaction")]
+    pub use_transaction: bool,
+}
+
+fn default_reader_threads() -> usize {
+    4
+}
+
+fn default_writer_threads() -> usize {
+    4
+}
+
+fn default_channel_buffer_size() -> usize {
+    1000
+}
+
+fn default_use_transaction() -> bool {
+    true
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -234,6 +262,10 @@ impl JobConfig {
             column_types,
             mode,
             batch_size,
+            reader_threads: get_i64("reader_threads").map(|i| i as usize).unwrap_or_else(default_reader_threads),
+            writer_threads: get_i64("writer_threads").map(|i| i as usize).unwrap_or_else(default_writer_threads),
+            channel_buffer_size: get_i64("channel_buffer_size").map(|i| i as usize).unwrap_or_else(default_channel_buffer_size),
+            use_transaction: map.get("use_transaction").and_then(|v| v.as_bool()).unwrap_or_else(default_use_transaction),
         })
     }
 
@@ -363,6 +395,10 @@ impl JobConfig {
             column_types: None,
             mode: Some("insert".to_string()),
             batch_size: Some(100),
+            reader_threads: default_reader_threads(),
+            writer_threads: default_writer_threads(),
+            channel_buffer_size: default_channel_buffer_size(),
+            use_transaction: default_use_transaction(),
         }
     }
 }

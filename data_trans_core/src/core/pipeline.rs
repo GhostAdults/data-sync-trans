@@ -1,19 +1,25 @@
-//! Data数据同步管道
-//! Reader → Channel → Writer 架构，支持多线程并发
+//! 数据同步管道执行器
+//!
+//! Reader → Channel → Writer 架构
+//!
+//! 职责：
+//! - 创建和管理工作 Channel
+//! - 启动 Reader/Writer 任务
+//! - 实现背压控制和消息分发
+//! - 收集执行统计
+
 use anyhow::Result;
+use data_trans_common::constant::pipeline::{
+    DEFAULT_BATCH_SIZE, DEFAULT_BUFFER_SIZE, DEFAULT_READER_THREADS, DEFAULT_WRITER_THREADS,
+};
+use data_trans_common::pipeline::PipelineMessage;
+use data_trans_reader::ReaderJob;
+use data_trans_writer::WriterJob;
+use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::mpsc;
-use tokio::task::JoinHandle;
-
-use data_trans_common::job_config::JobConfig;
-use data_trans_common::pipeline::PipelineMessage;
-use data_trans_common::types::DataSourceType;
-use data_trans_reader::api_reader::ApiJob;
-use data_trans_reader::database_reader::DatabaseJob;
-use data_trans_reader::Job as ReaderJob;
-use data_trans_writer::database_writer::DatabaseJob as DatabaseWriterJob;
-use data_trans_writer::Job as WriterJob;
+use tracing::{error, info, warn};
 
 // ==========================================
 // 配置
@@ -22,58 +28,37 @@ use data_trans_writer::Job as WriterJob;
 /// 管道配置
 #[derive(Debug, Clone)]
 pub struct PipelineConfig {
-    /// Reader 线程数（分片读取任务数）
+    /// Reader 线程数
     pub reader_threads: usize,
-
-    /// Writer 线程数（用于并发写入）
+    /// Writer 线程数
     pub writer_threads: usize,
-
     /// Channel 缓冲区大小
-    pub channel_buffer_size: usize,
-
-    /// 每个批次的大小
+    pub buffer_size: usize,
+    /// 批处理大小
     pub batch_size: usize,
-
     /// 是否使用事务
     pub use_transaction: bool,
-
-    /// 数据源类型
-    pub data_source: DataSourceType,
 }
 
 impl Default for PipelineConfig {
     fn default() -> Self {
         Self {
-            reader_threads: 1,         // 默认单 Reader（API 通常只需要一次请求）
-            writer_threads: 4,         // 默认 4 个 Writer
-            channel_buffer_size: 1000, // 缓冲 1000 条数据
-            batch_size: 100,           // 每批 100 条
+            reader_threads: DEFAULT_READER_THREADS,
+            writer_threads: DEFAULT_WRITER_THREADS,
+            buffer_size: DEFAULT_BUFFER_SIZE,
+            batch_size: DEFAULT_BATCH_SIZE,
             use_transaction: true,
-            data_source: DataSourceType::Api, // 默认使用 API 数据源
         }
     }
 }
 
-// ==========================================
-// 统计信息
-// ==========================================
-
-/// 管道统计信息
-#[derive(Debug, Clone, Default)]
+/// 管道执行统计
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct PipelineStats {
-    /// 读取的记录数
     pub records_read: usize,
-
-    /// 写入的记录数
     pub records_written: usize,
-
-    /// 失败的记录数
     pub records_failed: usize,
-
-    /// 总耗时（秒）
     pub elapsed_secs: f64,
-
-    /// 吞吐量（记录/秒）
     pub throughput: f64,
 }
 
@@ -83,240 +68,480 @@ impl PipelineStats {
             self.throughput = self.records_written as f64 / self.elapsed_secs;
         }
     }
+
+    pub fn records_failed(&self) -> usize {
+        self.records_read.saturating_sub(self.records_written)
+    }
 }
 
 // ==========================================
-// 管道执行器
+// 管道处理器
 // ==========================================
 
-/// 管道执行器：协调 Reader 和 Writer
-pub struct Pipeline {
-    config: Arc<JobConfig>,
-    pipeline_config: Arc<PipelineConfig>,
+/// 管道处理器：协调 Reader → Writer
+pub struct Pipeline<R, W>
+where
+    R: ReaderJob + 'static,
+    W: WriterJob<PipelineMessage> + 'static,
+{
+    config: PipelineConfig,
+    reader: Arc<R>,
+    writer: Arc<W>,
 }
 
-impl Pipeline {
-    pub fn new(config: JobConfig, pipeline_config: PipelineConfig) -> Self {
+impl<R, W> Pipeline<R, W>
+where
+    R: ReaderJob + 'static,
+    W: WriterJob<PipelineMessage> + 'static,
+{
+    pub fn new(config: PipelineConfig, reader: Arc<R>, writer: Arc<W>) -> Self {
         Self {
-            config: Arc::new(config),
-            pipeline_config: Arc::new(pipeline_config),
+            config,
+            reader,
+            writer,
         }
     }
 
-    /// 执行管道
-    pub async fn execute(&self) -> Result<PipelineStats> {
+    pub async fn run_processor(&self) -> Result<PipelineStats> {
         let start_time = Instant::now();
-        println!("\n启动数据同步管道");
-        println!(
-            "配置: {} Reader, {} Writer, Channel 缓冲 {}",
-            self.pipeline_config.reader_threads,
-            self.pipeline_config.writer_threads,
-            self.pipeline_config.channel_buffer_size
+        let buffer_size = self.config.buffer_size;
+        let reader_threads = self.config.reader_threads;
+        let writer_threads = self.config.writer_threads;
+
+        info!(
+            "Pipeline 启动: {} Reader, {} Writer, 缓冲区 {}",
+            reader_threads, writer_threads, buffer_size
         );
 
-        // 创建 Channel
-        let (tx, rx) = mpsc::channel::<PipelineMessage>(self.pipeline_config.channel_buffer_size);
+        // 创建 Channel: Reader -> Writer 分发器
+        let (tx, rx) = mpsc::channel(buffer_size);
 
-        let reader_handles = match &self.pipeline_config.data_source {
-            DataSourceType::Database { .. } => {
-                println!("数据库数据源，启动任务切分...");
+        // 启动 Writer 任务
+        let writer_handle =
+            spawn_writer_task(Arc::clone(&self.writer), rx, writer_threads, reader_threads);
 
-                let job = Arc::new(DatabaseJob::new(Arc::clone(&self.config))?);
+        // 启动 Reader 任务
+        let reader_handle = spawn_reader_task(Arc::clone(&self.reader), tx, reader_threads);
 
-                println!("Job: {}", job.description());
+        // 等待所有任务完成
+        let (reader_result, writer_result) = tokio::try_join!(reader_handle, writer_handle)?;
 
-                let split_result = job.split(self.pipeline_config.reader_threads).await?;
-                println!("总记录数: {}", split_result.total_records);
-                println!("切分为 {} 个任务", split_result.tasks.len());
-
-                let mut handles = Vec::new();
-                for task in split_result.tasks {
-                    let job = Arc::clone(&job);
-                    let tx = tx.clone();
-
-                    let handle = tokio::spawn(async move { job.execute_task(task, tx).await });
-
-                    handles.push(handle);
-                }
-
-                handles
-            }
-
-            DataSourceType::Api => {
-                println!("API 数据源，使用单 Reader");
-
-                let job: Arc<dyn ReaderJob<PipelineMessage>> =
-                    Arc::new(ApiJob::new(Arc::clone(&self.config)));
-                println!("Job: {}", job.description());
-
-                let split_result = job.split(1).await?;
-                let task = split_result.tasks[0].clone();
-
-                let tx = tx.clone();
-                let handle = tokio::spawn(async move { job.execute_task(task, tx).await });
-
-                vec![handle]
-            }
+        // 汇总统计
+        let elapsed = start_time.elapsed();
+        let mut stats = PipelineStats {
+            records_read: reader_result.unwrap_or(0),
+            records_written: writer_result.unwrap_or(0),
+            elapsed_secs: elapsed.as_secs_f64(),
+            ..Default::default()
         };
+        stats.records_failed = stats.records_failed();
+        stats.calculate_throughput();
 
-        // 释放原始 tx，确保所有 Reader 完成后 Channel 能正确关闭
-        drop(tx);
+        info!(
+            "Pipeline 完成: 读取 {} 条, 写入 {} 条, 失败 {} 条, 耗时 {:.2}s, 吞吐 {:.2} 条/秒",
+            stats.records_read,
+            stats.records_written,
+            stats.records_failed,
+            stats.elapsed_secs,
+            stats.throughput
+        );
 
-        let writer_handles = self.start_writers(rx).await?;
+        Ok(stats)
+    }
+}
 
-        // 等待所有 Reader 完成
+/// 启动 Reader 任务
+fn spawn_reader_task<R>(
+    reader: Arc<R>,
+    tx: mpsc::Sender<PipelineMessage>,
+    reader_threads: usize,
+) -> tokio::task::JoinHandle<Result<usize>>
+where
+    R: ReaderJob + 'static,
+{
+    tokio::spawn(async move {
+        let split_result = reader.split(reader_threads).await?;
+        let total = split_result.total_records;
+        info!(
+            "Reader: 总记录数 {}, 切分为 {} 个任务",
+            total,
+            split_result.tasks.len()
+        );
+
+        let mut handles = Vec::new();
+        for task in split_result.tasks {
+            let reader = Arc::clone(&reader);
+            let tx = tx.clone();
+            let handle = tokio::spawn(async move { reader.execute_task(task, tx).await });
+            handles.push(handle);
+        }
+
         let mut total_read = 0;
-        for (i, handle) in reader_handles.into_iter().enumerate() {
+        for (i, handle) in handles.into_iter().enumerate() {
             match handle.await {
                 Ok(Ok(count)) => {
                     total_read += count;
-                    println!("Reader-{} 完成，读取 {} 条", i, count);
+                    info!("Reader-{} 完成，读取 {} 条", i, count);
                 }
                 Ok(Err(e)) => {
-                    eprintln!("Reader-{} 失败: {}", i, e);
+                    error!("Reader-{} 失败: {}", i, e);
                 }
                 Err(e) => {
-                    eprintln!("Reader-{} 任务崩溃: {}", i, e);
+                    error!("Reader-{} 任务崩溃: {}", i, e);
+                }
+            }
+        }
+
+        // 发送完成信号
+        if tx.send(PipelineMessage::ReaderFinished).await.is_err() {
+            warn!("Reader: 发送完成信号失败");
+        }
+
+        Ok::<_, anyhow::Error>(total_read)
+    })
+}
+
+/// 启动 Writer 任务（含内部分发器）
+fn spawn_writer_task<W>(
+    writer: Arc<W>,
+    rx: mpsc::Receiver<PipelineMessage>,
+    writer_threads: usize,
+    reader_total: usize,
+) -> tokio::task::JoinHandle<Result<usize>>
+where
+    W: WriterJob<PipelineMessage> + 'static,
+{
+    tokio::spawn(async move {
+        let split_result = writer.split(writer_threads).await?;
+        info!("Writer: 切分为 {} 个任务", split_result.tasks.len());
+
+        let writer_count = split_result.tasks.len();
+        if writer_count == 0 {
+            return Ok(0);
+        }
+
+        // 为每个 Writer 创建独立 Channel
+        let mut writer_txs = Vec::with_capacity(writer_count);
+        let mut writer_handles = Vec::with_capacity(writer_count);
+
+        for (i, task) in split_result.tasks.into_iter().enumerate() {
+            let (tx, rx) = mpsc::channel(100);
+            writer_txs.push(tx);
+
+            let writer = Arc::clone(&writer);
+            let handle = tokio::spawn(async move { writer.execute_task(task, rx).await });
+            writer_handles.push((i, handle));
+        }
+
+        // 分发器：轮询分发到各 Writer
+        let mut rx = rx;
+        let mut current_writer = 0;
+        let mut reader_finished_count = 0;
+        let mut writer_error: Option<anyhow::Error> = None;
+
+        while let Some(msg) = rx.recv().await {
+            match &msg {
+                PipelineMessage::DataBatch(_) => {
+                    if writer_txs[current_writer].send(msg).await.is_err() {
+                        let err_msg = format!("Writer 分发器: Writer-{} Channel 已关闭，可能已失败", current_writer);
+                        error!("{}", err_msg);
+                        // 立即停止分发，检查 Writer 状态
+                        drop(writer_txs);
+                        writer_error = Some(anyhow::anyhow!("{}", err_msg));
+                        break;
+                    }
+                    current_writer = (current_writer + 1) % writer_count;
+                }
+                PipelineMessage::ReaderFinished => {
+                    reader_finished_count += 1;
+                    info!(
+                        "Writer 分发器: 收到 Reader 完成信号 ({}/{})",
+                        reader_finished_count, reader_total
+                    );
+
+                    if reader_finished_count >= reader_total {
+                        info!("Writer 分发器: 所有 Reader 完成，通知所有 Writer");
+                        for tx in &writer_txs {
+                            let _ = tx.send(PipelineMessage::ReaderFinished).await;
+                        }
+                        drop(writer_txs);
+                        break;
+                    }
+                }
+                PipelineMessage::Error(err) => {
+                    error!("Writer 分发器: 收到错误 - {}", err);
+                    for tx in &writer_txs {
+                        let _ = tx.send(PipelineMessage::Error(err.clone())).await;
+                    }
+                    drop(writer_txs);
+                    writer_error = Some(anyhow::anyhow!("Reader 错误: {}", err));
+                    break;
                 }
             }
         }
 
         // 等待所有 Writer 完成
         let mut total_written = 0;
-        for (i, handle) in writer_handles.into_iter().enumerate() {
+        for (i, handle) in writer_handles.into_iter() {
             match handle.await {
                 Ok(Ok(count)) => {
                     total_written += count;
-                    println!("Writer-{} 完成，写入 {} 条", i, count);
+                    info!("Writer-{} 完成，写入 {} 条", i, count);
                 }
                 Ok(Err(e)) => {
-                    eprintln!("Writer-{} 失败: {}", i, e);
+                    error!("Writer-{} 失败: {}", i, e);
+                    // 保存第一个错误
+                    if writer_error.is_none() {
+                        writer_error = Some(e);
+                    }
                 }
                 Err(e) => {
-                    eprintln!("Writer-{} 任务崩溃: {}", i, e);
+                    error!("Writer-{} 任务崩溃: {}", i, e);
+                    if writer_error.is_none() {
+                        writer_error = Some(anyhow::anyhow!("Writer-{} 任务崩溃: {}", i, e));
+                    }
                 }
             }
         }
 
-        let elapsed = start_time.elapsed();
-        let mut stats = PipelineStats {
-            records_read: total_read,
-            records_written: total_written,
-            records_failed: total_read.saturating_sub(total_written),
-            elapsed_secs: elapsed.as_secs_f64(),
-            throughput: 0.0,
-        };
-        stats.calculate_throughput();
+        // 如果有错误，返回错误而不是成功
+        if let Some(e) = writer_error {
+            return Err(e);
+        }
 
-        println!("\n同步完成");
-        println!("   读取: {} 条", stats.records_read);
-        println!("   写入: {} 条", stats.records_written);
-        println!("   失败: {} 条", stats.records_failed);
-        println!("   耗时: {:.2} 秒", stats.elapsed_secs);
-        println!("   吞吐: {:.2} 条/秒", stats.throughput);
+        Ok::<_, anyhow::Error>(total_written)
+    })
+}
 
-        Ok(stats)
-    }
+/// 使用 Reader/Writer 执行管道
+pub async fn run_processor<R, W>(
+    config: PipelineConfig,
+    reader: Arc<R>,
+    writer: Arc<W>,
+) -> Result<PipelineStats>
+where
+    R: ReaderJob + 'static,
+    W: WriterJob<PipelineMessage> + 'static,
+{
+    let processor = Pipeline::new(config, reader, writer);
+    processor.run_processor().await
+}
 
-    /// 启动多个 Writer（使用分发策略）
-    async fn start_writers(
-        &self,
-        rx: mpsc::Receiver<PipelineMessage>,
-    ) -> Result<Vec<JoinHandle<Result<usize>>>> {
-        let writer_count = self.pipeline_config.writer_threads;
+/// 动态分发版本的 Pipeline 执行
+pub async fn run_dynamic_pipeline(
+    config: PipelineConfig,
+    reader: Box<dyn ReaderJob>,
+    writer: Box<dyn WriterJob<PipelineMessage>>,
+) -> Result<PipelineStats> {
+    let reader: Arc<dyn ReaderJob> = Arc::from(reader);
+    let writer: Arc<dyn WriterJob<PipelineMessage>> = Arc::from(writer);
+    run_dynamic(config, reader, writer).await
+}
 
-        // 创建 Writer Job
-        let writer_job: Arc<dyn WriterJob<PipelineMessage>> =
-            Arc::new(DatabaseWriterJob::new(Arc::clone(&self.config))?);
+/// 动态分发内部实现
+async fn run_dynamic(
+    config: PipelineConfig,
+    reader: Arc<dyn ReaderJob>,
+    writer: Arc<dyn WriterJob<PipelineMessage>>,
+) -> Result<PipelineStats> {
+    let start_time = Instant::now();
+    let buffer_size = config.buffer_size;
+    let reader_threads = config.reader_threads;
+    let writer_threads = config.writer_threads;
 
-        println!("Writer Job: {}", writer_job.description());
+    info!(
+        "Pipeline 启动: {} Reader, {} Writer, 缓冲区 {}",
+        reader_threads, writer_threads, buffer_size
+    );
 
-        // 切分 Writer 任务
-        let split_result = writer_job.split(writer_count).await?;
-        let write_tasks = split_result.tasks;
+    // 创建 Channel: Reader -> Writer 分发器
+    let (tx, rx) = mpsc::channel(buffer_size);
 
-        let mut writer_txs = Vec::new();
-        let mut writer_handles = Vec::new();
+    // 启动 Writer 任务
+    let writer_handle = spawn_writer_task_dynamic(writer, rx, writer_threads, reader_threads);
 
-        for (i, task) in write_tasks.into_iter().enumerate() {
-            let (tx, rx) = mpsc::channel::<PipelineMessage>(100);
+    // 启动 Reader 任务
+    let reader_handle = spawn_reader_task_dynamic(reader, tx, reader_threads);
+
+    // 等待所有任务完成
+    let (reader_result, writer_result) = tokio::try_join!(reader_handle, writer_handle)?;
+
+    // 汇总统计
+    let elapsed = start_time.elapsed();
+    let mut stats = PipelineStats {
+        records_read: reader_result.unwrap_or(0),
+        records_written: writer_result.unwrap_or(0),
+        elapsed_secs: elapsed.as_secs_f64(),
+        ..Default::default()
+    };
+    stats.records_failed = stats.records_failed();
+    stats.calculate_throughput();
+
+    info!(
+        "Pipeline 完成: 读取 {} 条, 写入 {} 条, 失败 {} 条, 耗时 {:.2}s, 吞吐 {:.2} 条/秒",
+        stats.records_read,
+        stats.records_written,
+        stats.records_failed,
+        stats.elapsed_secs,
+        stats.throughput
+    );
+
+    Ok(stats)
+}
+
+/// 启动 Reader 任务 (动态分发版本)
+fn spawn_reader_task_dynamic(
+    reader: Arc<dyn ReaderJob>,
+    tx: mpsc::Sender<PipelineMessage>,
+    reader_threads: usize,
+) -> tokio::task::JoinHandle<Result<usize>> {
+    tokio::spawn(async move {
+        let split_result = reader.split(reader_threads).await?;
+        let total = split_result.total_records;
+        info!(
+            "Reader: 总记录数 {}, 切分为 {} 个任务",
+            total,
+            split_result.tasks.len()
+        );
+
+        let mut handles = Vec::new();
+        for task in split_result.tasks {
+            let reader = Arc::clone(&reader);
+            let tx = tx.clone();
+            let handle = tokio::spawn(async move { reader.execute_task(task, tx).await });
+            handles.push(handle);
+        }
+
+        let mut total_read = 0;
+        for (i, handle) in handles.into_iter().enumerate() {
+            match handle.await {
+                Ok(Ok(count)) => {
+                    total_read += count;
+                    info!("Reader-{} 完成，读取 {} 条", i, count);
+                }
+                Ok(Err(e)) => {
+                    error!("Reader-{} 失败: {}", i, e);
+                }
+                Err(e) => {
+                    error!("Reader-{} 任务崩溃: {}", i, e);
+                }
+            }
+        }
+
+        // 发送完成信号
+        if tx.send(PipelineMessage::ReaderFinished).await.is_err() {
+            warn!("Reader: 发送完成信号失败");
+        }
+
+        Ok::<_, anyhow::Error>(total_read)
+    })
+}
+
+/// 启动 Writer 任务 (动态分发)
+fn spawn_writer_task_dynamic(
+    writer: Arc<dyn WriterJob<PipelineMessage>>,
+    rx: mpsc::Receiver<PipelineMessage>,
+    writer_threads: usize,
+    reader_total: usize,
+) -> tokio::task::JoinHandle<Result<usize>> {
+    tokio::spawn(async move {
+        let split_result = writer.split(writer_threads).await?;
+        info!("Writer: 切分为 {} 个任务", split_result.tasks.len());
+
+        let writer_count = split_result.tasks.len();
+        if writer_count == 0 {
+            return Ok(0);
+        }
+
+        // 为每个 Writer 创建独立 Channel
+        let mut writer_txs = Vec::with_capacity(writer_count);
+        let mut writer_handles = Vec::with_capacity(writer_count);
+
+        for (i, task) in split_result.tasks.into_iter().enumerate() {
+            let (tx, rx) = mpsc::channel(100);
             writer_txs.push(tx);
 
-            let job = Arc::clone(&writer_job);
-            let handle = tokio::spawn(async move { job.execute_task(task, rx).await });
+            let writer = Arc::clone(&writer);
+            let handle = tokio::spawn(async move { writer.execute_task(task, rx).await });
             writer_handles.push((i, handle));
         }
 
-        // 启动分发器任务：从主 Channel 读取，轮询分发到各 Writer
-        let reader_total = self.pipeline_config.reader_threads;
-        tokio::spawn(async move {
-            let mut current_writer = 0;
-            let mut reader_finished_count = 0;
+        // 分发器：轮询分发到各 Writer
+        let mut rx = rx;
+        let mut current_writer = 0;
+        let mut reader_finished_count = 0;
+        let mut writer_error: Option<anyhow::Error> = None;
 
-            let mut rx = rx;
-
-            while let Some(msg) = rx.recv().await {
-                match &msg {
-                    PipelineMessage::DataBatch(_) => {
-                        // 轮询分发到 Writer
-                        let tx = &writer_txs[current_writer];
-                        if tx.send(msg).await.is_err() {
-                            eprintln!("分发器: Writer-{} Channel 已关闭", current_writer);
-                        }
-                        current_writer = (current_writer + 1) % writer_count;
+        while let Some(msg) = rx.recv().await {
+            match &msg {
+                PipelineMessage::DataBatch(_) => {
+                    if writer_txs[current_writer].send(msg).await.is_err() {
+                        let err_msg = format!("Writer 分发器: Writer-{} Channel 已关闭，可能已失败", current_writer);
+                        error!("{}", err_msg);
+                        // 立即停止分发，检查 Writer 状态
+                        drop(writer_txs);
+                        writer_error = Some(anyhow::anyhow!("{}", err_msg));
+                        break;
                     }
-                    PipelineMessage::ReaderFinished => {
-                        reader_finished_count += 1;
-                        println!(
-                            "分发器: 收到 Reader 完成信号 ({}/{})",
-                            reader_finished_count, reader_total
-                        );
+                    current_writer = (current_writer + 1) % writer_count;
+                }
+                PipelineMessage::ReaderFinished => {
+                    reader_finished_count += 1;
+                    info!(
+                        "Writer 分发器: 收到 Reader 完成信号 ({}/{})",
+                        reader_finished_count, reader_total
+                    );
 
-                        // 所有 Reader 完成后，通知所有 Writer
-                        if reader_finished_count >= reader_total {
-                            println!("分发器: 所有 Reader 完成，通知所有 Writer");
-                            for tx in &writer_txs {
-                                let _ = tx.send(PipelineMessage::ReaderFinished).await;
-                            }
-                            break;
-                        }
-                    }
-                    PipelineMessage::Error(err) => {
-                        eprintln!("分发器: 收到错误 - {}", err);
-                        // 通知所有 Writer 停止
+                    if reader_finished_count >= reader_total {
+                        info!("Writer 分发器: 所有 Reader 完成，通知所有 Writer");
                         for tx in &writer_txs {
-                            let _ = tx.send(msg.clone()).await;
+                            let _ = tx.send(PipelineMessage::ReaderFinished).await;
                         }
+                        drop(writer_txs);
                         break;
                     }
                 }
+                PipelineMessage::Error(err) => {
+                    error!("Writer 分发器: 收到错误 - {}", err);
+                    for tx in &writer_txs {
+                        let _ = tx.send(PipelineMessage::Error(err.clone())).await;
+                    }
+                    drop(writer_txs);
+                    writer_error = Some(anyhow::anyhow!("Reader 错误: {}", err));
+                    break;
+                }
             }
+        }
 
-            // 关闭所有 Writer 的 Channel
-            drop(writer_txs);
-            println!("分发器: 已关闭所有 Writer Channel");
-        });
+        // 等待所有 Writer 完成
+        let mut total_written = 0;
+        for (i, handle) in writer_handles.into_iter() {
+            match handle.await {
+                Ok(Ok(count)) => {
+                    total_written += count;
+                    info!("Writer-{} 完成，写入 {} 条", i, count);
+                }
+                Ok(Err(e)) => {
+                    error!("Writer-{} 失败: {}", i, e);
+                    // 保存第一个错误
+                    if writer_error.is_none() {
+                        writer_error = Some(e);
+                    }
+                }
+                Err(e) => {
+                    error!("Writer-{} 任务崩溃: {}", i, e);
+                    if writer_error.is_none() {
+                        writer_error = Some(anyhow::anyhow!("Writer-{} 任务崩溃: {}", i, e));
+                    }
+                }
+            }
+        }
 
-        Ok(writer_handles.into_iter().map(|(_, h)| h).collect())
-    }
-}
+        // 如果有错误，返回错误而不是成功
+        if let Some(e) = writer_error {
+            return Err(e);
+        }
 
-// ==========================================
-// 便捷入口函数
-// ==========================================
-
-/// 使用管道执行同步（默认）
-pub async fn sync_with_pipeline(config: JobConfig) -> Result<PipelineStats> {
-    let pipeline_config = PipelineConfig::default();
-    let pipeline = Pipeline::new(config, pipeline_config);
-    pipeline.execute().await
-}
-
-/// 使用管道执行同步（切分任务）
-pub async fn sync_with_pipeline_task(
-    config: JobConfig,
-    pipeline_config: PipelineConfig,
-) -> Result<PipelineStats> {
-    let pipeline = Pipeline::new(config, pipeline_config);
-    pipeline.execute().await
+        Ok::<_, anyhow::Error>(total_written)
+    })
 }

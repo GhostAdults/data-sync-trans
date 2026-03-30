@@ -4,17 +4,16 @@ use serde_json::Value;
 use std::collections::BTreeMap;
 use std::result::Result::{Err, Ok};
 
-use crate::core::pipeline::{sync_with_pipeline_task, PipelineConfig};
-use anyhow::{bail, Result};
+use crate::core::runner::{run_sync, RunResult};
+use anyhow::Result;
 use data_trans_common::app_config::config_loader::get_config_manager;
 use data_trans_common::app_config::value::ConfigValue;
 use data_trans_common::job_config::JobConfig;
 use data_trans_common::resp::{ApiResp, ColInfo};
-use data_trans_common::types::DataSourceType;
 use data_trans_common::{
     CreateConfigReq, DescribeQuery, GenMapQuery, MappingConfig, TablesQuery, UpdateConfigReq,
 };
-use data_trans_reader::rdbms_reader_util::util::dbpool::{get_pool_from_query, DbPool};
+use data_trans_common::db::{get_pool_from_query, DbPool};
 use sqlx::{MySqlPool, PgPool, Row};
 
 use std::collections::HashMap;
@@ -92,34 +91,8 @@ fn guess_type(sql_type: &str) -> &'static str {
 }
 
 /// 同步数据函数
-pub async fn sync(cfg: &JobConfig) -> Result<()> {
-    // 根据 input.type 判断数据源类型
-    let data_source = match cfg.input.source_type.as_str() {
-        "api" => DataSourceType::Api,
-        "database" => DataSourceType::Database {
-            query: String::new(),
-            limit: None,
-            offset: None,
-        },
-        unknown => {
-            bail!(
-                "不支持的输入类型: '{}'. 支持的类型: 'api', 'database'",
-                unknown
-            );
-        }
-    };
-
-    let pipeline_config = PipelineConfig {
-        reader_threads: 4,
-        writer_threads: 4,
-        channel_buffer_size: 1000,
-        batch_size: cfg.batch_size.unwrap_or(1000),
-        use_transaction: true,
-        data_source,
-    };
-
-    let _stats = sync_with_pipeline_task(cfg.clone(), pipeline_config).await?;
-    Ok(())
+pub async fn sync(cfg: JobConfig) -> Result<RunResult> {
+    run_sync(std::sync::Arc::new(cfg)).await
 }
 
 pub async fn list_tables(q: TablesQuery) -> (StatusCode, Json<ApiResp<Vec<String>>>) {
@@ -325,13 +298,13 @@ pub async fn sync_command(
         }
     }
 
-    match sync(&cfg).await {
-        Ok(()) => (
+    match sync(cfg).await {
+        Ok(result) => (
             StatusCode::OK,
             Json(ApiResp {
-                ok: true,
-                data: Some(serde_json::json!({})),
-                error: None,
+                ok: result.status == crate::core::runner::RunStatus::Success,
+                data: Some(serde_json::to_value(&result).unwrap_or_default()),
+                error: result.error,
             }),
         ),
         Err(e) => (

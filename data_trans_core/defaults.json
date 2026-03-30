@@ -10,7 +10,7 @@
             {
               "db_type": "mysql",
               "url": "mysql://root:123456@127.0.0.1:3306/my_db",
-              "table": "zone_data",
+              "table": "user",
               "key_columns": [
                 "id"
               ],
@@ -26,11 +26,11 @@
         "type": "database",
         "config": {
           "connection": {
-            "db_type": "postgres",
-            "url": "postgresql://postgres:123456@127.0.0.1:5432/test_db",
-            "table": "tb_example",
+            "db_type": "mysql",
+            "url": "mysql://root:123456@127.0.0.1:3306/my_db",
+            "table": "user",
             "key_columns": [
-              "example"
+              "id"
             ],
             "max_connections": 10,
             "acquire_timeout_secs": 30,

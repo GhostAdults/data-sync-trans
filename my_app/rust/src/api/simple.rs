@@ -3,6 +3,7 @@ pub use data_trans_core::read_config;
 use flutter_rust_bridge::frb;
 use data_trans_common::app_config::path::default_config_path;
 pub use data_trans_common::job_config::JobConfig;
+pub use data_trans_common::job_config::JobConfig as Config;
 pub use data_trans_common::resp::{TablesQuery,BaseDbQuery};
 pub use data_trans_core::core::serve::list_tables;
 use serde_json::json;

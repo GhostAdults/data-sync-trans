@@ -12,6 +12,11 @@ use std::sync::OnceLock;
 use std::time::Duration;
 
 use super::util::{dbkind_from_opt_str, DbParams};
+use crate::types::UnifiedValue;
+
+// 向后兼容的类型别名
+#[allow(deprecated)]
+type TypedVal = UnifiedValue;
 
 /// Database type enumeration
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum, Hash)]
@@ -75,12 +80,12 @@ pub async fn get_db_pool(
         timeout_secs,
     };
     if let Some(pool) = pools.get(&key) {
-        println!("Current DB Pools count: {}", pools.len());
+        println!("获取一次连接池，当前连接池数量: {}", pools.len());
         return Ok(pool.clone());
     }
 
     let pool = create_pool(&key).await?;
-    println!("create db pool: {:?}", key);
+    println!("创建新的数据库连接池: {:?}", key);
     pools.insert(key, pool.clone());
     Ok(pool)
 }
@@ -114,6 +119,19 @@ pub trait DbExecutor: Send + Sync {
     async fn fetch_string_pair(&self, sql: &str) -> Result<(Option<String>, Option<String>)>;
     async fn fetch_optional_string(&self, sql: &str) -> Result<Option<String>>;
     async fn execute(&self, sql: &str) -> Result<u64>;
+
+    /// 执行带参数的 SQL
+    async fn execute_with_params(&self, sql: &str, params: &[TypedVal]) -> Result<u64>;
+
+    /// 批量执行参数化 SQL（多行 VALUES 合并）
+    async fn execute_batch(&self, base_sql: &str, rows: &[Vec<TypedVal>]) -> Result<u64> {
+        let mut count = 0u64;
+        for row in rows {
+            self.execute_with_params(base_sql, row).await?;
+            count += 1;
+        }
+        Ok(count)
+    }
 }
 
 /// PostgreSQL executor reference
@@ -138,6 +156,75 @@ impl DbExecutor for PgExecutorRef {
         let result = sqlx::query(sql).execute(&self.pool).await?;
         Ok(result.rows_affected())
     }
+
+    async fn execute_with_params(&self, sql: &str, params: &[TypedVal]) -> Result<u64> {
+        let mut query = sqlx::query(sql);
+        for p in params {
+            query = bind_typed_val_pg(query, p);
+        }
+        let result = query.execute(&self.pool).await?;
+        Ok(result.rows_affected())
+    }
+
+    async fn execute_batch(&self, base_sql: &str, rows: &[Vec<TypedVal>]) -> Result<u64> {
+        if rows.is_empty() {
+            return Ok(0);
+        }
+
+        let col_count = rows[0].len();
+        let mut sql = base_sql.to_string();
+        sql.push_str(" VALUES ");
+
+        for (i, row) in rows.iter().enumerate() {
+            if i > 0 {
+                sql.push_str(", ");
+            }
+            sql.push('(');
+            for j in 0..row.len() {
+                if j > 0 {
+                    sql.push_str(", ");
+                }
+                sql.push_str(&format!("${}", i * col_count + j + 1));
+            }
+            sql.push(')');
+        }
+
+        let mut query = sqlx::query(&sql);
+        for row in rows {
+            for p in row {
+                query = bind_typed_val_pg(query, p);
+            }
+        }
+
+        let result = query.execute(&self.pool).await?;
+        Ok(result.rows_affected())
+    }
+}
+
+fn bind_typed_val_pg<'q>(
+    mut q: sqlx::query::Query<'q, sqlx::Postgres, sqlx::postgres::PgArguments>,
+    v: &UnifiedValue,
+) -> sqlx::query::Query<'q, sqlx::Postgres, sqlx::postgres::PgArguments> {
+    match v {
+        UnifiedValue::Int(n) => q = q.bind(*n),
+        UnifiedValue::Float(n) => q = q.bind(*n),
+        UnifiedValue::Bool(b) => q = q.bind(*b),
+        UnifiedValue::Decimal(d) => q = q.bind(d.clone()),
+        UnifiedValue::OptI64(n) => q = q.bind(*n),
+        UnifiedValue::OptF64(n) => q = q.bind(*n),
+        UnifiedValue::OptBool(n) => q = q.bind(*n),
+        UnifiedValue::OptDecimal(n) => q = q.bind(*n),
+        UnifiedValue::OptDateTime(n) => q = q.bind(*n),
+        UnifiedValue::DateTime(n) => q = q.bind(*n),
+        UnifiedValue::String(s) => q = q.bind(s.clone()),
+        UnifiedValue::Null => q = q.bind(Option::<String>::None),
+        UnifiedValue::Bytes(b) => q = q.bind(b.clone()),
+        UnifiedValue::Date(d) => q = q.bind(*d),
+        UnifiedValue::Time(t) => q = q.bind(*t),
+        UnifiedValue::Json(j) => q = q.bind(j.to_string()),
+        UnifiedValue::Array(_) => q = q.bind(String::new()), // Arrays not directly supported
+    }
+    q
 }
 
 /// MySQL executor reference
@@ -162,6 +249,74 @@ impl DbExecutor for MySqlExecutorRef {
         let result = sqlx::query(sql).execute(&self.pool).await?;
         Ok(result.rows_affected())
     }
+
+    async fn execute_with_params(&self, sql: &str, params: &[TypedVal]) -> Result<u64> {
+        let mut query = sqlx::query(sql);
+        for p in params {
+            query = bind_typed_val_my(query, p);
+        }
+        let result = query.execute(&self.pool).await?;
+        Ok(result.rows_affected())
+    }
+
+    async fn execute_batch(&self, base_sql: &str, rows: &[Vec<TypedVal>]) -> Result<u64> {
+        if rows.is_empty() {
+            return Ok(0);
+        }
+
+        let mut sql = base_sql.to_string();
+        sql.push_str(" VALUES ");
+
+        for (i, row) in rows.iter().enumerate() {
+            if i > 0 {
+                sql.push_str(", ");
+            }
+            sql.push('(');
+            for j in 0..row.len() {
+                if j > 0 {
+                    sql.push_str(", ");
+                }
+                sql.push('?');
+            }
+            sql.push(')');
+        }
+
+        let mut query = sqlx::query(&sql);
+        for row in rows {
+            for p in row {
+                query = bind_typed_val_my(query, p);
+            }
+        }
+
+        let result = query.execute(&self.pool).await?;
+        Ok(result.rows_affected())
+    }
+}
+
+fn bind_typed_val_my<'q>(
+    mut q: sqlx::query::Query<'q, sqlx::MySql, sqlx::mysql::MySqlArguments>,
+    v: &UnifiedValue,
+) -> sqlx::query::Query<'q, sqlx::MySql, sqlx::mysql::MySqlArguments> {
+    match v {
+        UnifiedValue::Int(n) => q = q.bind(*n),
+        UnifiedValue::Float(n) => q = q.bind(*n),
+        UnifiedValue::Bool(b) => q = q.bind(*b),
+        UnifiedValue::Decimal(d) => q = q.bind(d.clone()),
+        UnifiedValue::OptI64(n) => q = q.bind(*n),
+        UnifiedValue::OptF64(n) => q = q.bind(*n),
+        UnifiedValue::OptBool(n) => q = q.bind(*n),
+        UnifiedValue::OptDecimal(n) => q = q.bind(*n),
+        UnifiedValue::OptDateTime(n) => q = q.bind(*n),
+        UnifiedValue::DateTime(n) => q = q.bind(*n),
+        UnifiedValue::String(s) => q = q.bind(s.clone()),
+        UnifiedValue::Null => q = q.bind(Option::<String>::None),
+        UnifiedValue::Bytes(b) => q = q.bind(b.clone()),
+        UnifiedValue::Date(d) => q = q.bind(*d),
+        UnifiedValue::Time(t) => q = q.bind(*t),
+        UnifiedValue::Json(j) => q = q.bind(j.to_string()),
+        UnifiedValue::Array(_) => q = q.bind(String::new()), // Arrays not directly supported
+    }
+    q
 }
 
 impl DbPool {

@@ -20,5 +20,9 @@ sqlx = { version = "0.7", features = [
     "postgres",
     "mysql",
     "chrono",
+    "rust_decimal",
 ] }
 tokio = { workspace = true, features = ["sync"] }
+rust_decimal = "1.36"
+redb = "2"
+tracing = "0.1"

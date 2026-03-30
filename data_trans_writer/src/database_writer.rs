@@ -10,8 +10,8 @@ use data_trans_common::JobConfig;
 use tokio::sync::mpsc;
 
 use crate::rdbms_writer_util::rdbms_writer::{PipelineRowWriter, RdbmsConfig, RdbmsJob};
-use crate::types::{JobSplitResult, WriteMode, WriteTask};
-use crate::Job;
+use crate::types::{SplitResult, WriteMode, WriteTask};
+use crate::WriterJob;
 
 /// Database Writer Job
 pub struct DatabaseJob {
@@ -58,8 +58,8 @@ impl DatabaseJob {
 }
 
 #[async_trait::async_trait]
-impl Job<PipelineMessage> for DatabaseJob {
-    async fn split(&self, writer_threads: usize) -> Result<JobSplitResult> {
+impl WriterJob<PipelineMessage> for DatabaseJob {
+    async fn split(&self, writer_threads: usize) -> Result<SplitResult> {
         let rdbms_job = self.build_rdbms_job()?;
         rdbms_job.split(writer_threads).await
     }

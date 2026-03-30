@@ -18,8 +18,10 @@ sqlx = { version = "0.7", features = [
     "postgres",
     "mysql",
     "chrono",
+    "rust_decimal",
 ] }
 chrono = { workspace = true }
+rust_decimal = "1.36"
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }

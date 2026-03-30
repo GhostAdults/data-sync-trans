@@ -1,21 +1,18 @@
-use crate::rdbms_reader_util::util::{DbPool, get_pool_from_config};
+use crate::rdbms_reader_util::util::{build_select_query, get_pool_from_config, DbPool};
 use crate::RdbmsJob;
-use crate::{JobSplitResult, ReadTask};
+use crate::{ReadTask, SplitResult};
 use anyhow::Result;
 use serde_json::Value as JsonValue;
 use tracing::warn;
 
-pub async fn do_split<M>(rdbms_job: &RdbmsJob<M>, advice_number: usize) -> JobSplitResult
-where
-    M: Send + Sync + 'static,
-{
+pub async fn do_split(rdbms_job: &RdbmsJob, advice_number: usize) -> SplitResult {
     let config = &rdbms_job.config;
 
     let pool = match get_pool_from_config(&rdbms_job.original_config).await {
         Ok(p) => p,
         Err(e) => {
             warn!("获取数据库连接池失败: {:?}", e);
-            return JobSplitResult {
+            return SplitResult {
                 total_records: 0,
                 tasks: vec![],
             };
@@ -39,23 +36,47 @@ where
     let mut tasks = Vec::new();
 
     if config.is_table_mode {
-        let shard_count = calculate_shard_count(conns.len(), advice_number, config.split_factor);
+        let table_number = config.table_count.max(1);
+        let mut each_table_should_split =
+            calculate_each_table_split_number(advice_number, table_number);
 
-        if let Some(split_pk) = &config.split_pk {
-            if !split_pk.trim().is_empty() && shard_count > 1 {
-                match split_by_pk(&pool, config, split_pk, shard_count, &conns).await {
-                    Ok(split_tasks) => tasks = split_tasks,
-                    Err(e) => {
-                        warn!("主键切分失败，回退到 LIMIT/OFFSET 模式: {:?}", e);
-                        tasks = split_by_limit_offset(config, shard_count, &conns);
-                    }
+        let has_split_pk = config
+            .split_pk
+            .as_ref()
+            .map(|pk| !pk.trim().is_empty())
+            .unwrap_or(false);
+
+        let need_split_table = each_table_should_split > 1 && has_split_pk;
+
+        if need_split_table {
+            if config.table_count == 1usize {
+                let split_factor = config.split_factor.unwrap_or(5);
+                each_table_should_split = each_table_should_split * split_factor;
+            }
+            // 进行单表的切分
+            match split_by_pk(
+                &pool,
+                config,
+                config.split_pk.as_ref().unwrap(),
+                each_table_should_split,
+                &conns,
+            )
+            .await
+            {
+                Ok(split_tasks) => tasks.extend(split_tasks),
+                Err(e) => {
+                    warn!("主键切分失败，回退到 LIMIT/OFFSET 模式: {:?}", e);
+                    tasks = split_by_limit_offset(config, each_table_should_split, &conns);
                 }
-            } else {
-                tasks = split_by_limit_offset(config, shard_count, &conns);
             }
         } else {
-            tasks = split_by_limit_offset(config, shard_count, &conns);
+            println!(
+                "表模式不切分: {} 个表, 每表建议分 {} 片, has_split_pk={}",
+                table_number, each_table_should_split, has_split_pk
+            );
+            tasks = build_single_task(config, &conns);
         }
+        // 直接使用sql 构建
     } else if let Some(sqls) = &config.query_sql {
         for (i, sql) in sqls.iter().enumerate() {
             if sql.trim().is_empty() {
@@ -71,19 +92,41 @@ where
             });
         }
     }
-
+    // TO-DO 返回的是数据条数而不是任务数
     let total_records = tasks.len();
-    JobSplitResult {
+    SplitResult {
         total_records,
         tasks,
     }
 }
 
-fn calculate_shard_count(conn_count: usize, advice_number: usize, split_factor: usize) -> usize {
-    let split_factor = if split_factor > 0 { split_factor } else { 5 };
-    let base_count = if conn_count == 0 { 1 } else { conn_count };
-    let each_table_split = (advice_number + base_count - 1) / base_count;
-    each_table_split * split_factor
+/// 计算每个表应该分多少片
+/// 公式: eachTableShouldSplittedNumber = adviceNumber / tableNumber
+fn calculate_each_table_split_number(advice_number: usize, table_number: usize) -> usize {
+    if table_number == 0 {
+        return advice_number;
+    }
+    (advice_number as f64 / table_number as f64).ceil() as usize
+}
+
+/// 构建单个任务（不切分时使用）
+fn build_single_task(config: &crate::RdbmsConfig, conns: &[JsonValue]) -> Vec<ReadTask> {
+    let query_sql = match &config.where_clause {
+        Some(w) => format!(
+            "SELECT {} FROM {} WHERE {}",
+            config.columns, config.table, w
+        ),
+        None => build_select_query(config.columns.as_str(), config.table.as_str()),
+    };
+
+    let conn = conns.first().cloned().unwrap_or_else(|| JsonValue::Null);
+    vec![ReadTask {
+        task_id: 0,
+        conn,
+        query_sql: Some(query_sql),
+        offset: 0,
+        limit: 0,
+    }]
 }
 
 async fn split_by_pk(
@@ -156,8 +199,7 @@ fn split_by_limit_offset(
     conns: &[JsonValue],
 ) -> Vec<ReadTask> {
     let mut tasks = Vec::new();
-    let shard_size = 1000;
-
+    let shard_size = 100;
     for i in 0..shard_count {
         let offset = i * shard_size;
         let query_sql = build_limit_offset_sql(
@@ -289,7 +331,7 @@ fn build_range_query_sql(
     where_clause: Option<&str>,
     range: &PkRange,
 ) -> String {
-    let base = format!("SELECT {} FROM {}", columns, table);
+    let base: String = build_select_query(columns, table);
     let range_cond = match range {
         PkRange::Range { pk, min, max } => format!("{} >= {} AND {} < {}", pk, min, pk, max),
         PkRange::Inclusive { pk, min, max } => format!("{} >= {} AND {} <= {}", pk, min, pk, max),
@@ -307,7 +349,7 @@ fn build_null_pk_query_sql(
     where_clause: Option<&str>,
     split_pk: &str,
 ) -> String {
-    let base = format!("SELECT {} FROM {}", columns, table);
+    let base = build_select_query(columns, table);
     let null_cond = format!("{} IS NULL", split_pk);
 
     match where_clause {
@@ -323,7 +365,7 @@ fn build_limit_offset_sql(
     limit: usize,
     offset: usize,
 ) -> String {
-    let base = format!("SELECT {} FROM {}", columns, table);
+    let base = build_select_query(columns, table);
 
     match where_clause {
         Some(w) => format!("{} WHERE {} LIMIT {} OFFSET {}", base, w, limit, offset),

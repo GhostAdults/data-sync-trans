@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use data_trans_common::JobConfig;
 
-/// 写入任务描述
+/// 一个writer job分裂成多个writer task
 #[derive(Debug, Clone)]
 pub struct WriteTask {
     pub task_id: usize,
@@ -38,6 +38,6 @@ impl WriteMode {
 }
 
 /// Job 切分结果
-pub struct JobSplitResult {
+pub struct SplitResult {
     pub tasks: Vec<WriteTask>,
 }

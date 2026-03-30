@@ -5,8 +5,7 @@ use crate::core::serve::*;
 use crate::run_serve;
 use clap::{Parser, Subcommand};
 use data_trans_common::{ApiConfig, JobConfig};
-use data_trans_reader::rdbms_reader_util::util::dbpool::detect_db_kind;
-use data_trans_reader::rdbms_reader_util::util::dbpool::DbKind;
+use data_trans_common::db::{detect_db_kind, DbKind};
 
 use anyhow::{bail, Context, Result};
 use regex::Regex;
@@ -93,7 +92,7 @@ pub fn run_cli(cmd: Commands) {
             Ok(cfg) => {
                 let rt = Runtime::new().unwrap();
                 rt.block_on(async {
-                    if let Err(e) = sync(&cfg).await {
+                    if let Err(e) = sync(cfg).await {
                         eprintln!("{}", e);
                     }
                 });
@@ -223,7 +222,7 @@ pub fn run_cli(cmd: Commands) {
             Ok(cfg) => {
                 let rt = Runtime::new().unwrap();
                 rt.block_on(async {
-                    if let Err(e) = sync(&cfg).await {
+                    if let Err(e) = sync(cfg).await {
                         eprintln!("{}", e);
                     }
                 });

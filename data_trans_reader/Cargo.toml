@@ -23,3 +23,4 @@ sqlx = { version = "0.7", features = [
 futures = "0.3"
 reqwest = { version = "0.12", features = ["json"] }
 chrono = { workspace = true }
+rust_decimal = "1.36"

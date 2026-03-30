@@ -42,9 +42,9 @@ pub trait DbParams {
 
     fn resolve_type(&self) -> Option<String> {
         if let Some(s) = self.db_type_opt() {
-                if !s.is_empty() {
-                    return Some(s.to_string());
-                }
+            if !s.is_empty() {
+                return Some(s.to_string());
+            }
         }
 
         let task_id = self.task_id_opt().unwrap_or("default");
@@ -73,8 +73,8 @@ impl DbParams for BaseDbQuery {
 
 /// Get database pool from JobConfig
 pub async fn get_pool_from_config(cfg: &JobConfig) -> Result<Arc<DbPool>> {
-    let db_config = JobConfig::parse_database_config(&cfg.output)?;
-    let db_type_str = JobConfig::get_source_db_type(&cfg.output);
+    let db_config = JobConfig::parse_database_config(&cfg.input)?;
+    let db_type_str = JobConfig::get_source_db_type(&cfg.input);
 
     let kind = detect_db_kind(
         &db_config.url,
@@ -97,13 +97,28 @@ pub async fn get_pool_from_config(cfg: &JobConfig) -> Result<Arc<DbPool>> {
 }
 
 /// Build query SQL with LIMIT and OFFSET
-pub fn build_query_sql(table: &str, query: Option<&str>, limit: usize, offset: usize) -> String {
+pub fn build_query_sql(
+    columns: &str,
+    table: &str,
+    query: Option<&str>,
+    limit: usize,
+    offset: usize,
+) -> String {
     let query_str = query.filter(|s| !s.trim().is_empty());
     if let Some(custom_query) = query_str {
         format!("{} LIMIT {} OFFSET {}", custom_query, limit, offset)
+    } else if limit > 0 || offset > 0 {
+        format!(
+            "SELECT {} FROM {} LIMIT {} OFFSET {}",
+            columns, table, limit, offset
+        )
     } else {
-        format!("SELECT * FROM {} LIMIT {} OFFSET {}", table, limit, offset)
+        format!("SELECT {} FROM {}", columns, table)
     }
+}
+
+pub fn build_select_query(columns: &str, table: &str) -> String {
+    format!("SELECT {} FROM {}", columns, table)
 }
 
 /// Convert option string to DbKind

@@ -26,6 +26,8 @@ toml = "0.8"
 futures = "0.3"
 async-trait = "0.1"
 config = { version = "0.15.19", features = ["json"] }
+tracing = { workspace = true }
+uuid = { version = "1.11", features = ["v4"] }
 
 
 [dev-dependencies]
