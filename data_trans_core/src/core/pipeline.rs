@@ -11,9 +11,8 @@ use anyhow::Result;
 use data_trans_common::constant::pipeline::{
     DEFAULT_BATCH_SIZE, DEFAULT_BUFFER_SIZE, DEFAULT_READER_THREADS, DEFAULT_WRITER_THREADS,
 };
+use data_trans_common::interface::{ReaderJob, WriterJob};
 use data_trans_common::pipeline::PipelineMessage;
-use data_trans_reader::ReaderJob;
-use data_trans_writer::WriterJob;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::Instant;

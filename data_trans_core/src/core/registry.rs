@@ -6,9 +6,8 @@ use std::collections::HashMap;
 use std::sync::{Arc, OnceLock, RwLock};
 
 use anyhow::Result;
+use data_trans_common::interface::{ReaderJob, WriterJob};
 use data_trans_common::{JobConfig, PipelineMessage};
-use data_trans_reader::ReaderJob;
-use data_trans_writer::WriterJob;
 
 /// Reader 创建函数类型
 pub type ReaderCreator = fn(Arc<JobConfig>) -> Result<Box<dyn ReaderJob>>;
@@ -60,7 +59,11 @@ impl GlobalRegistry {
     ) -> Result<Box<dyn ReaderJob>> {
         let readers = self.readers.read().unwrap();
         let creator = readers.get(source_type).ok_or_else(|| {
-            anyhow::anyhow!("未找到 Reader 类型: '{}'. 已注册: {:?}", source_type, readers.keys().collect::<Vec<_>>())
+            anyhow::anyhow!(
+                "未找到 Reader 类型: '{}'. 已注册: {:?}",
+                source_type,
+                readers.keys().collect::<Vec<_>>()
+            )
         })?;
         creator(config)
     }
@@ -73,7 +76,11 @@ impl GlobalRegistry {
     ) -> Result<Box<dyn WriterJob<PipelineMessage>>> {
         let writers = self.writers.read().unwrap();
         let creator = writers.get(source_type).ok_or_else(|| {
-            anyhow::anyhow!("未找到 Writer 类型: '{}'. 已注册: {:?}", source_type, writers.keys().collect::<Vec<_>>())
+            anyhow::anyhow!(
+                "未找到 Writer 类型: '{}'. 已注册: {:?}",
+                source_type,
+                writers.keys().collect::<Vec<_>>()
+            )
         })?;
         creator(config)
     }

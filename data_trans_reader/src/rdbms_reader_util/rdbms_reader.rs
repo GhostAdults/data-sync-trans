@@ -11,7 +11,7 @@ use std::sync::Arc;
 use tokio::sync::mpsc;
 use tracing::info;
 
-use crate::{ReadTask, ReaderJob, ReaderTask, SplitResult};
+use data_trans_common::interface::{ReadTask, ReaderJob, ReaderTask, SplitReaderResult};
 use data_trans_common::pipeline::RecordBuilder;
 use data_trans_common::schema::{MetadataDiscoverer, RdbmsDiscoverer, TableSchema};
 use data_trans_common::JobConfig;
@@ -94,7 +94,7 @@ impl RdbmsJob {
 /// Job
 #[async_trait::async_trait]
 impl ReaderJob for RdbmsJob {
-    async fn split(&self, reader_threads: usize) -> Result<SplitResult> {
+    async fn split(&self, reader_threads: usize) -> Result<SplitReaderResult> {
         let result = reader_split_util::do_split(&self, reader_threads).await;
         Ok(result)
     }

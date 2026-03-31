@@ -5,10 +5,10 @@ use std::sync::Arc;
 use data_trans_common::job_config::DbConfig;
 use data_trans_common::JobConfig;
 
-use crate::types::{SplitResult, WriteMode, WriteTask};
+use data_trans_common::interface::{SplitWriterResult, WriteMode, WriteTask};
 
 /// 切分 Writer 任务
-pub fn do_split(original_config: &Arc<JobConfig>, writer_threads: usize) -> SplitResult {
+pub fn do_split(original_config: &Arc<JobConfig>, advice_number: usize) -> SplitWriterResult {
     let mode = original_config
         .mode
         .as_deref()
@@ -20,7 +20,8 @@ pub fn do_split(original_config: &Arc<JobConfig>, writer_threads: usize) -> Spli
     let db_config = DbConfig::default();
     let use_transaction = db_config.use_transaction.unwrap_or(false);
 
-    let tasks: Vec<WriteTask> = (0..writer_threads)
+    //这里直接按照advice number进行切分就好，
+    let tasks: Vec<WriteTask> = (0..advice_number)
         .map(|i| WriteTask {
             task_id: i,
             config: Arc::clone(original_config),
@@ -30,5 +31,5 @@ pub fn do_split(original_config: &Arc<JobConfig>, writer_threads: usize) -> Spli
         })
         .collect();
 
-    SplitResult { tasks }
+    SplitWriterResult { tasks }
 }

@@ -1,6 +1,6 @@
 //! WriteMode 单元测试
 
-use data_trans_writer::WriteMode;
+use data_trans_common::interface::WriteMode;
 
 #[test]
 fn test_write_mode_from_str_insert() {

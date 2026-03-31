@@ -1,18 +1,18 @@
 use crate::rdbms_reader_util::util::{build_select_query, get_pool_from_config, DbPool};
 use crate::RdbmsJob;
-use crate::{ReadTask, SplitResult};
 use anyhow::Result;
+use data_trans_common::interface::{ReadTask, SplitReaderResult};
 use serde_json::Value as JsonValue;
 use tracing::warn;
 
-pub async fn do_split(rdbms_job: &RdbmsJob, advice_number: usize) -> SplitResult {
+pub async fn do_split(rdbms_job: &RdbmsJob, advice_number: usize) -> SplitReaderResult {
     let config = &rdbms_job.config;
 
     let pool = match get_pool_from_config(&rdbms_job.original_config).await {
         Ok(p) => p,
         Err(e) => {
             warn!("获取数据库连接池失败: {:?}", e);
-            return SplitResult {
+            return SplitReaderResult {
                 total_records: 0,
                 tasks: vec![],
             };
@@ -94,7 +94,7 @@ pub async fn do_split(rdbms_job: &RdbmsJob, advice_number: usize) -> SplitResult
     }
     // TO-DO 返回的是数据条数而不是任务数
     let total_records = tasks.len();
-    SplitResult {
+    SplitReaderResult {
         total_records,
         tasks,
     }

@@ -9,7 +9,7 @@ use data_trans_common::pipeline::{PipelineMessage, RecordBuilder};
 use data_trans_common::JobConfig;
 
 use crate::rdbms_reader_util::util;
-use crate::{SplitResult, ReadTask, ReaderJob};
+use data_trans_common::interface::{ReadTask, ReaderJob, SplitReaderResult};
 
 /// API Job 实现
 pub struct ApiJob {
@@ -19,18 +19,16 @@ pub struct ApiJob {
 
 impl ApiJob {
     pub fn new(config: Arc<JobConfig>) -> Self {
-        let builder = RecordBuilder::new(
-            config.column_mapping.clone(),
-            config.column_types.clone(),
-        );
+        let builder =
+            RecordBuilder::new(config.column_mapping.clone(), config.column_types.clone());
         Self { config, builder }
     }
 }
 
 #[async_trait::async_trait]
 impl ReaderJob for ApiJob {
-    async fn split(&self, _reader_threads: usize) -> Result<SplitResult> {
-        Ok(SplitResult {
+    async fn split(&self, _reader_threads: usize) -> Result<SplitReaderResult> {
+        Ok(SplitReaderResult {
             total_records: 0,
             tasks: vec![ReadTask {
                 task_id: 0,

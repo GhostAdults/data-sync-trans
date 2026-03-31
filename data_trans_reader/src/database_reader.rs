@@ -1,6 +1,6 @@
-/// Database Reader - 数据库数据源的 Job 实现
-use crate::{SplitResult, ReadTask, ReaderJob};
 use anyhow::Result;
+/// Database Reader - 数据库数据源的 Job 实现
+use data_trans_common::interface::{ReadTask, ReaderJob, SplitReaderResult};
 use std::sync::Arc;
 use tokio::sync::mpsc;
 use tracing::info;
@@ -79,7 +79,7 @@ impl DatabaseJob {
 
 #[async_trait::async_trait]
 impl ReaderJob for DatabaseJob {
-    async fn split(&self, reader_threads: usize) -> Result<SplitResult> {
+    async fn split(&self, reader_threads: usize) -> Result<SplitReaderResult> {
         let rdbms_job = self.discover().await?;
         rdbms_job.split(reader_threads).await
     }

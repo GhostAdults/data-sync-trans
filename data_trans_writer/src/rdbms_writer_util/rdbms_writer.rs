@@ -14,8 +14,9 @@ use tokio::sync::mpsc;
 use tracing::{error, info};
 
 use crate::rdbms_writer_util::util::writer_split_util;
-use crate::types::{SplitResult, WriteMode, WriteTask};
-use crate::{WriterJob, WriterTask};
+use data_trans_common::interface::{
+    SplitWriterResult, WriteMode, WriteTask, WriterJob, WriterTask,
+};
 
 /// RDBMS 写入配置
 #[derive(Debug, Clone)]
@@ -60,7 +61,7 @@ impl<M> WriterJob<M> for RdbmsJob<M>
 where
     M: Send + Sync + 'static,
 {
-    async fn split(&self, writer_threads: usize) -> Result<SplitResult> {
+    async fn split(&self, writer_threads: usize) -> Result<SplitWriterResult> {
         let result = writer_split_util::do_split(&self.original_config, writer_threads);
         Ok(result)
     }
