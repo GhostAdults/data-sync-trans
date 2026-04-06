@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use super::pipeline::{run_dynamic_pipeline, run_processor, PipelineConfig, PipelineStats};
+use super::pipeline::{run_dynamic_pipeline, PipelineConfig, PipelineStats};
 use super::registry::GlobalRegistry;
 
 // ==========================================
@@ -148,38 +148,6 @@ impl Runner {
         let pipeline_config = self.config.to_pipeline_config();
 
         let pipeline_stats = run_dynamic_pipeline(pipeline_config, reader, writer).await?;
-
-        let elapsed = start_time.elapsed();
-        let mut stats = RunnerStats::from_pipeline(pipeline_stats);
-        stats.elapsed_secs = elapsed.as_secs_f64();
-        stats.calculate_throughput();
-
-        let status = if stats.records_failed > 0 {
-            RunStatus::Partial
-        } else {
-            RunStatus::Success
-        };
-
-        Ok(RunResult {
-            task_id,
-            stats,
-            status,
-            duration: elapsed,
-            error: None,
-        })
-    }
-
-    /// 使用静态分发的 Reader/Writer 执行同步
-    pub async fn run_with_jobs<R, W>(&self, reader: Arc<R>, writer: Arc<W>) -> Result<RunResult>
-    where
-        R: ReaderJob + 'static,
-        W: WriterJob<PipelineMessage> + 'static,
-    {
-        let task_id = uuid::Uuid::new_v4().to_string();
-        let start_time = Instant::now();
-        let pipeline_config = self.config.to_pipeline_config();
-
-        let pipeline_stats = run_processor(pipeline_config, reader, writer).await?;
 
         let elapsed = start_time.elapsed();
         let mut stats = RunnerStats::from_pipeline(pipeline_stats);
