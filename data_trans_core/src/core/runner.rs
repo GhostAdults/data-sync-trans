@@ -8,7 +8,7 @@
 
 use anyhow::Result;
 use data_trans_common::constant::pipeline::{
-    DEFAULT_BATCH_SIZE, DEFAULT_BUFFER_SIZE, DEFAULT_READER_THREADS, DEFAULT_WRITER_THREADS,
+    DEFAULT_BATCH_SIZE, DEFAULT_BUFFER_SIZE, DEFAULT_READER_THREADS,
 };
 use data_trans_common::interface::{ReaderJob, WriterJob};
 use data_trans_common::job_config::JobConfig;
@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use super::pipeline::{run_dynamic_pipeline, run_processor, PipelineConfig, PipelineStats};
+use super::pipeline::{run_pipeline, PipelineConfig, PipelineStats};
 use super::registry::GlobalRegistry;
 
 // ==========================================
@@ -29,7 +29,6 @@ use super::registry::GlobalRegistry;
 pub struct RunnerConfig {
     pub buffer_size: usize,
     pub reader_threads: usize,
-    pub writer_threads: usize,
     pub batch_size: usize,
     pub use_transaction: bool,
 }
@@ -39,7 +38,6 @@ impl Default for RunnerConfig {
         Self {
             buffer_size: DEFAULT_BUFFER_SIZE,
             reader_threads: DEFAULT_READER_THREADS,
-            writer_threads: DEFAULT_WRITER_THREADS,
             batch_size: DEFAULT_BATCH_SIZE,
             use_transaction: true,
         }
@@ -48,19 +46,18 @@ impl Default for RunnerConfig {
 
 impl RunnerConfig {
     pub fn from_job_config(config: &JobConfig) -> Self {
+        let pipeline_config = PipelineConfig::from_system_config(config);
         Self {
-            buffer_size: config.channel_buffer_size,
-            reader_threads: config.reader_threads,
-            writer_threads: config.writer_threads,
-            batch_size: config.batch_size.unwrap_or(DEFAULT_BATCH_SIZE),
-            use_transaction: config.use_transaction,
+            buffer_size: pipeline_config.buffer_size,
+            reader_threads: pipeline_config.reader_threads,
+            batch_size: pipeline_config.batch_size,
+            use_transaction: pipeline_config.use_transaction,
         }
     }
 
     fn to_pipeline_config(&self) -> PipelineConfig {
         PipelineConfig {
             reader_threads: self.reader_threads,
-            writer_threads: self.writer_threads,
             buffer_size: self.buffer_size,
             batch_size: self.batch_size,
             use_transaction: self.use_transaction,
@@ -75,7 +72,6 @@ impl RunnerConfig {
 /// 执行结果
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RunResult {
-    pub task_id: String,
     pub stats: RunnerStats,
     pub status: RunStatus,
     pub duration: Duration,
@@ -137,18 +133,16 @@ impl Runner {
         Self::new(config)
     }
 
-    /// 使用动态分发的 Reader/Writer 执行同步
-    pub async fn run_dynamic(
+    /// 执行同步任务
+    pub async fn run(
         &self,
         reader: Box<dyn ReaderJob>,
         writer: Box<dyn WriterJob<PipelineMessage>>,
     ) -> Result<RunResult> {
-        let task_id = uuid::Uuid::new_v4().to_string();
         let start_time = Instant::now();
         let pipeline_config = self.config.to_pipeline_config();
 
-        let pipeline_stats = run_dynamic_pipeline(pipeline_config, reader, writer).await?;
-
+        let pipeline_stats = run_pipeline(pipeline_config, reader, writer).await?;
         let elapsed = start_time.elapsed();
         let mut stats = RunnerStats::from_pipeline(pipeline_stats);
         stats.elapsed_secs = elapsed.as_secs_f64();
@@ -161,39 +155,6 @@ impl Runner {
         };
 
         Ok(RunResult {
-            task_id,
-            stats,
-            status,
-            duration: elapsed,
-            error: None,
-        })
-    }
-
-    /// 使用静态分发的 Reader/Writer 执行同步
-    pub async fn run_with_jobs<R, W>(&self, reader: Arc<R>, writer: Arc<W>) -> Result<RunResult>
-    where
-        R: ReaderJob + 'static,
-        W: WriterJob<PipelineMessage> + 'static,
-    {
-        let task_id = uuid::Uuid::new_v4().to_string();
-        let start_time = Instant::now();
-        let pipeline_config = self.config.to_pipeline_config();
-
-        let pipeline_stats = run_processor(pipeline_config, reader, writer).await?;
-
-        let elapsed = start_time.elapsed();
-        let mut stats = RunnerStats::from_pipeline(pipeline_stats);
-        stats.elapsed_secs = elapsed.as_secs_f64();
-        stats.calculate_throughput();
-
-        let status = if stats.records_failed > 0 {
-            RunStatus::Partial
-        } else {
-            RunStatus::Success
-        };
-
-        Ok(RunResult {
-            task_id,
             stats,
             status,
             duration: elapsed,
@@ -244,6 +205,7 @@ impl std::fmt::Display for DataSourceKind {
 /// 通过 GlobalRegistry 根据 source_type 动态创建对应的数据源实例，
 /// 支持任意已注册的 Reader/Writer 组合。
 pub async fn run_sync(config: Arc<JobConfig>) -> Result<RunResult> {
+    super::registry::ensure_initialized();
     let registry = GlobalRegistry::instance();
 
     // 动态创建 Reader 和 Writer
@@ -252,5 +214,5 @@ pub async fn run_sync(config: Arc<JobConfig>) -> Result<RunResult> {
 
     // 执行同步
     let runner = Runner::from_config(&config);
-    runner.run_dynamic(reader, writer).await
+    runner.run(reader, writer).await
 }

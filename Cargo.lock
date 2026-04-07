@@ -758,7 +758,9 @@ name = "data_trans_cli"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "data_trans_common",
  "data_trans_core",
+ "serde_json",
 ]
 
 [[package]]

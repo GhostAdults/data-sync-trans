@@ -22,9 +22,9 @@ pub fn init_and_watch_config() {
 }
 
 #[frb(sync)]
-pub fn get_config(path: Option<PathBuf>, id: Option<String>) -> Result<String, String> {
+pub fn get_config(path: Option<PathBuf>) -> Result<String, String> {
     let p: PathBuf = path.unwrap_or_else(|| default_config_path("app_trans"));
-    let config: JobConfig = match read_config(p, id) {
+    let config: JobConfig = match read_config(p) {
         Ok(c) => c,
         Err(e) => return Err(e.to_string()),
     };
@@ -38,7 +38,6 @@ pub async fn get_tables(_name: String) -> String {
         base: BaseDbQuery {
             db_url: None,
             db_type: None,
-            task_id: None,
         }
     };
     let (_, resp) = list_tables(query).await;

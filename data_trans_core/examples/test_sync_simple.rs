@@ -228,7 +228,6 @@ async fn main() {
     // column_types.insert("createdAt".to_string(), "timestamp".to_string());
 
     let config = JobConfig {
-        id: "test_sync_with_types".to_string(),
         input,
         output,
         column_mapping,
@@ -242,7 +241,6 @@ async fn main() {
     };
 
     println!("配置信息:");
-    println!("  任务ID: {}", config.id);
     println!("  同步模式: {:?}", config.mode);
     println!("  批次大小: {:?}", config.batch_size);
     println!("  列类型配置:");
@@ -256,7 +254,6 @@ async fn main() {
     match sync(config).await {
         Ok(result) => {
             println!("同步成功!");
-            println!("  任务ID: {}", result.task_id);
             println!("  状态: {:?}", result.status);
             println!("  读取行数: {}", result.stats.records_read);
             println!("  写入行数: {}", result.stats.records_written);

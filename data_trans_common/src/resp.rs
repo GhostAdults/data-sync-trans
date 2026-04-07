@@ -13,7 +13,6 @@ pub struct ApiResp<T> {
 pub struct BaseDbQuery {
     pub db_url: Option<String>,
     pub db_type: Option<String>,
-    pub task_id: Option<String>,
 }
 
 #[derive(Deserialize)]

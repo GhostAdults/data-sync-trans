@@ -151,10 +151,9 @@ fn wire__crate__api__simple__get_config_impl(
             let mut deserializer =
                 flutter_rust_bridge::for_generated::SseDeserializer::new(message);
             let api_path = <Option<PathBuf>>::sse_decode(&mut deserializer);
-            let api_id = <Option<String>>::sse_decode(&mut deserializer);
             deserializer.end();
             transform_result_sse::<_, String>((move || {
-                let output_ok = crate::api::simple::get_config(api_path, api_id)?;
+                let output_ok = crate::api::simple::get_config(api_path)?;
                 Ok(output_ok)
             })())
         },

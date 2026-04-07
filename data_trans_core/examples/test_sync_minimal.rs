@@ -1,5 +1,5 @@
 use data_trans_core::{init_system_config, core::serve::sync_command, };
-use data_trans_common::job_config::MappingConfig;
+use data_trans_common::job_config::{JobConfig, MappingConfig};
 use std::collections::BTreeMap;
 
 #[tokio::main]
@@ -21,8 +21,9 @@ async fn main() {
         mode: Some("insert".to_string()),
     };
 
-    println!("调用 sync_command，task_id = 'default'");
-    let (status, result) = sync_command("default".to_string(), mapping_config).await;
+    let cfg = JobConfig::default_test();
+    println!("调用 sync_command");
+    let (status, result) = sync_command(cfg, Some(mapping_config)).await;
 
     println!("\nHTTP Status: {:?}", status);
     println!("\n响应结果:");

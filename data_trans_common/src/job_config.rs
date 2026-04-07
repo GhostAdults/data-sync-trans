@@ -1,14 +1,10 @@
-use crate::app_config::manager::ConfigManager;
-use crate::app_config::value::ConfigValue;
-use anyhow::{bail, Context as _, Result};
+use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
-use std::collections::HashMap;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct JobConfig {
-    pub id: String,
     pub input: DataSourceConfig,
     pub output: DataSourceConfig,
     pub column_mapping: BTreeMap<String, String>,
@@ -116,159 +112,6 @@ impl Default for DbConfig {
 
 // 针对config 配置的函数
 impl JobConfig {
-    pub fn from_manager(mgr: &ConfigManager, task_id: &str) -> anyhow::Result<Self> {
-        let tasks = mgr
-            .get("tasks")
-            .and_then(|v| {
-                if let ConfigValue::Array(arr) = v {
-                    Some(arr)
-                } else {
-                    None
-                }
-            })
-            .context("未找到任务配置列表")?;
-
-        let task_val = tasks
-            .iter()
-            .find(|v| {
-                if let ConfigValue::Object(map) = v {
-                    map.get("id").and_then(|id| id.as_str()) == Some(task_id)
-                } else {
-                    false
-                }
-            })
-            .context(format!("未找到 ID 为 {} 的任务配置", task_id))?;
-
-        let map = if let ConfigValue::Object(m) = task_val {
-            m
-        } else {
-            bail!("配置格式错误")
-        };
-
-        let get_str = |k: &str| map.get(k).and_then(|v| v.as_str()).map(|s| s.to_string());
-        let get_i64 = |k: &str| map.get(k).and_then(|v| v.as_i64());
-
-        let input: &HashMap<String, ConfigValue> = map
-            .get("input")
-            .and_then(|v| match v {
-                ConfigValue::Object(obj) => Some(obj),
-                _ => None,
-            })
-            .context("未找到 input 配置")?;
-
-        let output: &HashMap<String, ConfigValue> = map
-            .get("output")
-            .and_then(|v| match v {
-                ConfigValue::Object(obj) => Some(obj),
-                _ => None,
-            })
-            .context("未找到 output 配置")?;
-
-        let input_config = DataSourceConfig {
-            name: input
-                .get("name")
-                .and_then(|v| v.as_str())
-                .unwrap_or("input")
-                .to_string(),
-            source_type: input
-                .get("type")
-                .and_then(|v| v.as_str())
-                .unwrap_or("api")
-                .to_string(),
-            is_table_mode: input
-                .get("is_table_mode")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(true),
-            config: input
-                .get("config")
-                .map(|v| v.as_value())
-                .unwrap_or(serde_json::Value::Null),
-            query_sql: input.get("query_sql").and_then(|v| {
-                if let ConfigValue::Array(arr) = v {
-                    Some(
-                        arr.iter()
-                            .filter_map(|v| v.as_str().map(|s| s.to_string()))
-                            .collect(),
-                    )
-                } else {
-                    None
-                }
-            }),
-        };
-
-        let output_config = DataSourceConfig {
-            name: output
-                .get("name")
-                .and_then(|v| v.as_str())
-                .unwrap_or("output")
-                .to_string(),
-            source_type: output
-                .get("type")
-                .and_then(|v| v.as_str())
-                .unwrap_or("database")
-                .to_string(),
-            is_table_mode: output
-                .get("is_table_mode")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(true),
-            config: output
-                .get("config")
-                .map(|v| v.as_value())
-                .unwrap_or(serde_json::Value::Null),
-            query_sql: output.get("query_sql").and_then(|v| {
-                if let ConfigValue::Array(arr) = v {
-                    Some(
-                        arr.iter()
-                            .filter_map(|v| v.as_str().map(|s| s.to_string()))
-                            .collect(),
-                    )
-                } else {
-                    None
-                }
-            }),
-        };
-
-        let batch_size = get_i64("batch_size").map(|i| i as usize);
-        let mode = get_str("mode");
-
-        let mut column_mapping = BTreeMap::new();
-        if let Some(ConfigValue::Object(m)) = map.get("column_mapping") {
-            for (k, v) in m {
-                if let Some(s) = v.as_str() {
-                    column_mapping.insert(k.clone(), s.to_string());
-                }
-            }
-        }
-
-        let mut column_types = BTreeMap::new();
-        if let Some(ConfigValue::Object(m)) = map.get("column_types") {
-            for (k, v) in m {
-                if let Some(s) = v.as_str() {
-                    column_types.insert(k.clone(), s.to_string());
-                }
-            }
-        }
-        let column_types = if column_types.is_empty() {
-            None
-        } else {
-            Some(column_types)
-        };
-
-        Ok(Self {
-            id: task_id.to_string(),
-            input: input_config,
-            output: output_config,
-            column_mapping,
-            column_types,
-            mode,
-            batch_size,
-            reader_threads: get_i64("reader_threads").map(|i| i as usize).unwrap_or_else(default_reader_threads),
-            writer_threads: get_i64("writer_threads").map(|i| i as usize).unwrap_or_else(default_writer_threads),
-            channel_buffer_size: get_i64("channel_buffer_size").map(|i| i as usize).unwrap_or_else(default_channel_buffer_size),
-            use_transaction: map.get("use_transaction").and_then(|v| v.as_bool()).unwrap_or_else(default_use_transaction),
-        })
-    }
-
     pub fn parse_api_config(source: &DataSourceConfig) -> Result<ApiConfig> {
         let cfg: &Value = &source.config;
         let url = cfg
@@ -359,10 +202,8 @@ impl JobConfig {
             .and_then(|v| v.as_str())
             .map(|s| s.to_string())
     }
-
-    pub fn default_with_id(id: String) -> Self {
+    pub fn default_test() -> Self {
         Self {
-            id,
             input: DataSourceConfig {
                 name: "api_source".to_string(),
                 source_type: "api".to_string(),

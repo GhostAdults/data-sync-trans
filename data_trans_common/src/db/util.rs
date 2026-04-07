@@ -6,7 +6,6 @@ use anyhow::{bail, Context, Result};
 use std::sync::Arc;
 
 use super::pool::{detect_db_kind, get_db_pool, DbKind, DbPool};
-use crate::app_config::config_loader::get_config_manager;
 use crate::job_config::JobConfig;
 use crate::resp::BaseDbQuery;
 
@@ -14,27 +13,11 @@ use crate::resp::BaseDbQuery;
 pub trait DbParams {
     fn db_url_opt(&self) -> Option<&str>;
     fn db_type_opt(&self) -> Option<&str>;
-    fn task_id_opt(&self) -> Option<&str> {
-        None
-    }
 
     fn resolve_url(&self) -> Result<String> {
         if let Some(s) = self.db_url_opt() {
             if !s.is_empty() {
                 return Ok(s.to_string());
-            }
-        }
-
-        let task_id = self.task_id_opt().unwrap_or("default");
-
-        if let Some(mgr) = get_config_manager() {
-            let mgr = mgr.read();
-            if let Ok(cfg) = JobConfig::from_manager(&mgr, task_id) {
-                if let Ok(db_config) = JobConfig::parse_database_config(&cfg.output) {
-                    if !db_config.url.is_empty() {
-                        return Ok(db_config.url);
-                    }
-                }
             }
         }
         bail!("missing db.url in query or config")
@@ -44,15 +27,6 @@ pub trait DbParams {
         if let Some(s) = self.db_type_opt() {
             if !s.is_empty() {
                 return Some(s.to_string());
-            }
-        }
-
-        let task_id = self.task_id_opt().unwrap_or("default");
-
-        if let Some(mgr) = get_config_manager() {
-            let mgr = mgr.read();
-            if let Ok(cfg) = JobConfig::from_manager(&mgr, task_id) {
-                return JobConfig::get_source_db_type(&cfg.output);
             }
         }
         None
@@ -65,9 +39,6 @@ impl DbParams for BaseDbQuery {
     }
     fn db_type_opt(&self) -> Option<&str> {
         self.db_type.as_deref()
-    }
-    fn task_id_opt(&self) -> Option<&str> {
-        self.task_id.as_deref()
     }
 }
 

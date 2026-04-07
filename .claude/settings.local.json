@@ -5,7 +5,10 @@
       "Bash(cargo test:*)",
       "Bash(cargo run:*)",
       "Bash(cargo build:*)",
-      "Bash(git checkout:*)"
+      "Bash(git checkout:*)",
+      "mcp__db-mcp-server__query_mysql1",
+      "mcp__db-mcp-server__schema_mysql1",
+      "mcp__db-mcp-server__execute_mysql1"
     ]
   }
 }

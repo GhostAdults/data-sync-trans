@@ -3,17 +3,17 @@ use axum::Json;
 use serde_json::Value;
 use std::collections::BTreeMap;
 use std::result::Result::{Err, Ok};
+use std::sync::Arc;
 
 use crate::core::runner::{run_sync, RunResult};
 use anyhow::Result;
-use data_trans_common::app_config::config_loader::get_config_manager;
 use data_trans_common::app_config::value::ConfigValue;
-use data_trans_common::job_config::JobConfig;
+use data_trans_common::db::{get_pool_from_query, DbPool};
+use data_trans_common::job_config::{JobConfig, MappingConfig};
 use data_trans_common::resp::{ApiResp, ColInfo};
 use data_trans_common::{
-    CreateConfigReq, DescribeQuery, GenMapQuery, MappingConfig, TablesQuery, UpdateConfigReq,
+    CreateConfigReq, DescribeQuery, GenMapQuery, TablesQuery, UpdateConfigReq,
 };
-use data_trans_common::db::{get_pool_from_query, DbPool};
 use sqlx::{MySqlPool, PgPool, Row};
 
 use std::collections::HashMap;
@@ -92,7 +92,7 @@ fn guess_type(sql_type: &str) -> &'static str {
 
 /// 同步数据函数
 pub async fn sync(cfg: JobConfig) -> Result<RunResult> {
-    run_sync(std::sync::Arc::new(cfg)).await
+    run_sync(Arc::new(cfg)).await
 }
 
 pub async fn list_tables(q: TablesQuery) -> (StatusCode, Json<ApiResp<Vec<String>>>) {
@@ -255,46 +255,19 @@ pub async fn gen_mapping(q: GenMapQuery) -> (StatusCode, Json<ApiResp<Value>>) {
 }
 
 pub async fn sync_command(
-    task_id: String,
-    mapping: MappingConfig,
+    mut cfg: JobConfig,
+    mapping: Option<MappingConfig>,
 ) -> (StatusCode, Json<ApiResp<Value>>) {
-    let mgr_arc = match get_config_manager() {
-        Some(m) => m,
-        None => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ApiResp {
-                    ok: false,
-                    data: None,
-                    error: Some("ConfigManager not initialized".to_string()),
-                }),
-            )
+    if let Some(mapping) = mapping {
+        cfg.column_mapping = mapping.column_mapping;
+        cfg.column_types = Some(mapping.column_types);
+        if let Some(m) = mapping.mode {
+            cfg.mode = Some(m);
         }
-    };
-
-    let mut cfg = match JobConfig::from_manager(&mgr_arc.read(), &task_id) {
-        Ok(c) => c,
-        Err(e) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(ApiResp {
-                    ok: false,
-                    data: None,
-                    error: Some(e.to_string()),
-                }),
-            )
-        }
-    };
-
-    // Override with mapping
-    cfg.column_mapping = mapping.column_mapping;
-    cfg.column_types = Some(mapping.column_types);
-    if let Some(m) = mapping.mode {
-        cfg.mode = Some(m);
-    }
-    if let Some(k) = mapping.key_columns {
-        if let Some(obj) = cfg.output.config.as_object_mut() {
-            obj.insert("key_columns".to_string(), serde_json::json!(k));
+        if let Some(k) = mapping.key_columns {
+            if let Some(obj) = cfg.output.config.as_object_mut() {
+                obj.insert("key_columns".to_string(), serde_json::json!(k));
+            }
         }
     }
 

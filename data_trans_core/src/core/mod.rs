@@ -10,7 +10,7 @@ use axum::{
     Router,
 };
 use axum_api::*;
-use data_trans_common::job_config::{ApiConfig, DbConfig, MappingConfig};
+use data_trans_common::job_config::{ApiConfig, DbConfig, JobConfig, MappingConfig};
 use data_trans_common::resp::{DescribeQuery, GenMapQuery, TablesQuery};
 use serde::Deserialize;
 use serde::Serialize;
@@ -32,8 +32,8 @@ pub struct LegacyConfig {
 
 #[derive(Deserialize)]
 pub struct SyncReq {
-    pub task_id: String,
-    pub mapping: MappingConfig,
+    pub config: JobConfig,
+    pub mapping: Option<MappingConfig>,
 }
 
 pub fn run_serve(host: String, port: u16) -> anyhow::Result<()> {

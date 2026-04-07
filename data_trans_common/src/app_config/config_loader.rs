@@ -1,19 +1,16 @@
-use anyhow::Result;
-use std::collections::HashMap;
-use std::path::Path;
-use crate::job_config::{JobConfig};
-use config::{Config, File};
-use serde_json::Value;
-use std::sync::{Arc, OnceLock};
-use parking_lot::RwLock;
 use crate::app_config::manager::ConfigManager;
 use crate::app_config::schema::ConfigSchema;
 use crate::app_config::value::ConfigValue;
+use anyhow::Result;
+use config::{Config, File};
+use parking_lot::RwLock;
+use serde_json::Value;
+use std::collections::HashMap;
+use std::path::Path;
+use std::sync::{Arc, OnceLock};
 
-pub static SYSTEM_CONFIG: OnceLock<Option<JobConfig>> = OnceLock::new();
 pub static CONFIG_MANAGER: OnceLock<Arc<RwLock<ConfigManager>>> = OnceLock::new();
 pub static WATCHER_HOLDER: OnceLock<notify::RecommendedWatcher> = OnceLock::new();
-
 
 pub fn load_user_config(path: &Path) -> Result<HashMap<String, ConfigValue>> {
     let settings = Config::builder()
@@ -21,7 +18,7 @@ pub fn load_user_config(path: &Path) -> Result<HashMap<String, ConfigValue>> {
         .build()?;
 
     let root: HashMap<String, ConfigValue> = settings.try_deserialize()?;
-    
+
     let mut result = HashMap::new();
     flatten("", &ConfigValue::Object(root), &mut result);
     Ok(result)
@@ -48,11 +45,7 @@ pub fn flatten(prefix: &str, value: &ConfigValue, out: &mut HashMap<String, Conf
         }
     }
 }
-pub fn apply_json_defaults(
-    mgr: &mut ConfigManager,
-    prefix: &str,
-    value: &Value,
-) {
+pub fn apply_json_defaults(mgr: &mut ConfigManager, prefix: &str, value: &Value) {
     match value {
         // 1️⃣ 对象：继续递归
         Value::Object(map) => {
@@ -69,9 +62,7 @@ pub fn apply_json_defaults(
 
         // 2️⃣ 数组：作为一个整体注册（不要拆 index）
         Value::Array(arr) => {
-            let default = ConfigValue::Array(
-                arr.iter().map(ConfigValue::from).collect()
-            );
+            let default = ConfigValue::Array(arr.iter().map(ConfigValue::from).collect());
 
             mgr.register(
                 prefix,
@@ -117,4 +108,3 @@ pub fn unflatten(flat: &HashMap<String, ConfigValue>) -> serde_json::Value {
 
     serde_json::Value::Object(root)
 }
-

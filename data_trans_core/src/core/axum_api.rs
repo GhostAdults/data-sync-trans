@@ -13,7 +13,7 @@ pub async fn h_list_tables(Query(q): Query<TablesQuery>) -> (StatusCode, Json<Ap
 }
 // sync data with mapping
 pub async fn h_sync(Json(body): Json<SyncReq>) -> (StatusCode, Json<ApiResp<Value>>) {
-    let (status, resp) = sync_command(body.task_id, body.mapping).await;
+    let (status, resp) = sync_command(body.config, body.mapping).await;
     (status, resp)
 }
 // describe table schema

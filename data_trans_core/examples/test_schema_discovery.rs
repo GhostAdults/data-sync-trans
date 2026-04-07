@@ -137,7 +137,6 @@ async fn main() -> Result<()> {
 
     // 创建 JobConfig
     let job_config = JobConfig {
-        id: "schema_discovery_test".to_string(),
         input: data_trans_common::job_config::DataSourceConfig {
             name: "mysql_source".to_string(),
             source_type: "database".to_string(),

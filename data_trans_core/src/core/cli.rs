@@ -255,7 +255,7 @@ fn read_config(path: PathBuf) -> Result<JobConfig> {
             let v: Value = serde_json::from_str(&data)?;
             serde_json::from_value(v)
         })
-        .unwrap_or_else(|_| JobConfig::default_with_id("default".to_string()));
+        .unwrap_or_else(|_| JobConfig::default_test());
 
     let db_config = JobConfig::parse_database_config(&cfg.output)?;
     sanitize_identifier(&db_config.table)?;

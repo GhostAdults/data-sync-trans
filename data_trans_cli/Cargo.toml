@@ -10,4 +10,6 @@ path = "src/main.rs"
 
 [dependencies]
 data_trans_core = { path = "../data_trans_core" }
+data_trans_common = { path = "../data_trans_common" }
 clap ={ workspace = true}
+serde_json = { workspace = true}
