@@ -163,43 +163,6 @@ impl Runner {
     }
 }
 
-// ==========================================
-// 数据源类型
-// ==========================================
-
-/// 数据源类型标识
-#[derive(Debug, Clone, Hash, Eq, PartialEq)]
-pub struct DataSourceKind(pub String);
-
-impl DataSourceKind {
-    pub fn api() -> Self {
-        Self("api".to_string())
-    }
-    pub fn database() -> Self {
-        Self("database".to_string())
-    }
-    pub fn kafka() -> Self {
-        Self("kafka".to_string())
-    }
-    pub fn new(name: &str) -> Self {
-        Self(name.to_string())
-    }
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-impl From<&str> for DataSourceKind {
-    fn from(s: &str) -> Self {
-        Self(s.to_string())
-    }
-}
-
-impl std::fmt::Display for DataSourceKind {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.0)
-    }
-}
 /// 根据配置动态创建 Reader/Writer 并执行同步
 ///
 /// 通过 GlobalRegistry 根据 source_type 动态创建对应的数据源实例，

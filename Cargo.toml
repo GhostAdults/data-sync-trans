@@ -1,17 +1,17 @@
 [workspace]
 
-members = [ 
-    "data_trans_core", 
+members = [
+    "data_trans_core",
     "data_trans_cli",
     "data_trans_reader",
     "data_trans_common",
-    "my_app/rust"
-, "data_trans_writer"]
+    "data_trans_writer",
+]
 resolver = "2"
 
 [workspace.dependencies]
 tokio = { version = "1.36", features = ["rt-multi-thread", "macros"] }
-flutter_rust_bridge = "=2.11.1"
+# flutter_rust_bridge = "=2.11.1" //暂时不使用flutter_rust_bridge，后续如果需要再添加
 chrono = { version = "0.4", features = ["serde"] }
 clap = "4.5.60"
 parking_lot = "0.12"
