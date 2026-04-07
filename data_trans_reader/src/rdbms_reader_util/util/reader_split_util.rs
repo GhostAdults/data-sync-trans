@@ -1,3 +1,4 @@
+use crate::rdbms_reader_util::rdbms_reader::count_total_records;
 use crate::rdbms_reader_util::util::{build_select_query, get_pool_from_config, DbPool};
 use crate::RdbmsJob;
 use anyhow::Result;
@@ -92,8 +93,17 @@ pub async fn do_split(rdbms_job: &RdbmsJob, advice_number: usize) -> SplitReader
             });
         }
     }
-    // TO-DO 返回的是数据条数而不是任务数
-    let total_records = tasks.len();
+    let total_records = match count_total_records(
+        &pool,
+        &config.table,
+        config.query_sql.as_ref().and_then(|v| v.first()).map(|s| s.as_str()),
+    )
+    .await
+    {
+        Ok(count) => count,
+        Err(_) => 0,
+    };
+
     SplitReaderResult {
         total_records,
         tasks,

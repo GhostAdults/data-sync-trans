@@ -20,6 +20,8 @@ use std::time::Instant;
 use tokio::sync::mpsc;
 use tracing::{error, info, warn};
 
+use super::progress::create_progress_bars;
+
 // ==========================================
 // 配置
 // ==========================================
@@ -51,26 +53,34 @@ impl Default for PipelineConfig {
 impl PipelineConfig {
     /// 从系统配置读取 pipeline 参数
     ///
-    /// 优先级：系统配置 (default.config.json) > JobConfig > 常量默认值
+    /// 优先级：系统配置 (default.config.json) > 常量默认值
     pub fn from_system_config(job_config: &data_trans_common::JobConfig) -> Self {
-        let (sys_reader, sys_buffer, sys_batch, sys_tx) =
-            crate::get_config_manager()
-                .map(|mgr| {
-                    let m = mgr.read();
-                    (
-                        m.get("pipeline.reader_threads").and_then(|v| v.as_i64()).map(|v| v as usize),
-                        m.get("pipeline.buffer_size").and_then(|v| v.as_i64()).map(|v| v as usize),
-                        m.get("pipeline.batch_size").and_then(|v| v.as_i64()).map(|v| v as usize),
-                        m.get("pipeline.use_transaction").and_then(|v| v.as_bool()),
-                    )
-                })
-                .unwrap_or((None, None, None, None));
+        let (sys_reader, sys_buffer, sys_batch, sys_tx) = crate::get_config_manager()
+            .map(|mgr| {
+                let m = mgr.read();
+                (
+                    m.get("pipeline.reader_threads")
+                        .and_then(|v| v.as_i64())
+                        .map(|v| v as usize),
+                    m.get("pipeline.buffer_size")
+                        .and_then(|v| v.as_i64())
+                        .map(|v| v as usize),
+                    m.get("pipeline.batch_size")
+                        .and_then(|v| v.as_i64())
+                        .map(|v| v as usize),
+                    m.get("pipeline.use_transaction").and_then(|v| v.as_bool()),
+                )
+            })
+            .unwrap_or((None, None, None, None));
 
         Self {
-            reader_threads: sys_reader.unwrap_or(job_config.reader_threads),
-            buffer_size: sys_buffer.unwrap_or(job_config.channel_buffer_size),
-            batch_size: sys_batch.or(job_config.batch_size).unwrap_or(DEFAULT_BATCH_SIZE),
-            use_transaction: sys_tx.unwrap_or(job_config.use_transaction),
+            reader_threads: sys_reader.unwrap_or(DEFAULT_READER_THREADS),
+            buffer_size: sys_buffer.unwrap_or(DEFAULT_BUFFER_SIZE),
+            // batch_size代表了Reader每次读取多少条记录后发送到Channel，过大可能导致内存压力，过小可能增加通信开销
+            batch_size: sys_batch
+                .or(job_config.batch_size)
+                .unwrap_or(DEFAULT_BATCH_SIZE),
+            use_transaction: sys_tx.unwrap_or(true),
         }
     }
 }
@@ -94,44 +104,6 @@ impl PipelineStats {
 
     pub fn records_failed(&self) -> usize {
         self.records_read.saturating_sub(self.records_written)
-    }
-}
-
-// ==========================================
-// 管道处理器
-// ==========================================
-
-/// 管道处理器：协调 Reader → Writer (1:1 Pair)
-pub struct Pipeline<R, W>
-where
-    R: ReaderJob + 'static,
-    W: WriterJob<PipelineMessage> + 'static,
-{
-    config: PipelineConfig,
-    reader: Arc<R>,
-    writer: Arc<W>,
-}
-
-impl<R, W> Pipeline<R, W>
-where
-    R: ReaderJob + 'static,
-    W: WriterJob<PipelineMessage> + 'static,
-{
-    pub fn new(config: PipelineConfig, reader: Arc<R>, writer: Arc<W>) -> Self {
-        Self {
-            config,
-            reader,
-            writer,
-        }
-    }
-
-    pub async fn run(&self) -> Result<PipelineStats> {
-        run_paired_pipeline(
-            &self.config,
-            self.reader.clone() as Arc<dyn ReaderJob>,
-            self.writer.clone() as Arc<dyn WriterJob<PipelineMessage>>,
-        )
-        .await
     }
 }
 
@@ -166,6 +138,8 @@ async fn run_paired_pipeline(
         info!("无读取任务，Pipeline 结束");
         return Ok(PipelineStats::default());
     }
+
+    let progress_ctx = create_progress_bars(reader_split.total_records);
 
     // 2. 以 Reader Task 数量 split Writer，保证 1:1
     let writer_split = writer.split(task_count).await?;
@@ -254,6 +228,7 @@ async fn run_paired_pipeline(
         match r_handle.await {
             Ok(Ok(count)) => {
                 total_read += count;
+                progress_ctx.reader_bar.inc(count as u64);
                 info!("Reader-{} 完成，读取 {} 条", i, count);
             }
             Ok(Err(e)) => {
@@ -275,6 +250,7 @@ async fn run_paired_pipeline(
         match w_handle.await {
             Ok(Ok(count)) => {
                 total_written += count;
+                progress_ctx.writer_bar.inc(count as u64);
                 info!("Writer-{} 完成，写入 {} 条", i, count);
             }
             Ok(Err(e)) => {
@@ -304,6 +280,8 @@ async fn run_paired_pipeline(
     };
     stats.records_failed = stats.records_failed();
     stats.calculate_throughput();
+
+    progress_ctx.finish(stats.elapsed_secs);
 
     info!(
         "Pipeline 完成: 读取 {} 条, 写入 {} 条, 失败 {} 条, 耗时 {:.2}s, 吞吐 {:.2} 条/秒",

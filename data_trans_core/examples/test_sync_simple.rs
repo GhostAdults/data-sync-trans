@@ -234,10 +234,7 @@ async fn main() {
         column_types: Some(column_types),
         mode: Some("insert".to_string()),
         batch_size: Some(100),
-        reader_threads: 1,
-        writer_threads: 1,
-        channel_buffer_size: 1000,
-        use_transaction: true,
+        channel_buffer_size: None,
     };
 
     println!("配置信息:");

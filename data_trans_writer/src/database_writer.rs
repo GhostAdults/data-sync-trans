@@ -10,6 +10,7 @@ use data_trans_common::JobConfig;
 use tokio::sync::mpsc;
 
 use crate::rdbms_writer_util::rdbms_writer::{PipelineRowWriter, RdbmsConfig, RdbmsJob};
+use data_trans_common::constant::pipeline::DEFAULT_BATCH_SIZE;
 use data_trans_common::interface::{SplitWriterResult, WriteMode, WriteTask, WriterJob};
 
 /// Database Writer Job
@@ -32,7 +33,10 @@ impl DatabaseJob {
             .map(WriteMode::from_str)
             .unwrap_or(WriteMode::Insert);
 
-        let batch_size = self.original_config.batch_size.unwrap_or(100);
+        let batch_size = self
+            .original_config
+            .batch_size
+            .unwrap_or(DEFAULT_BATCH_SIZE);
         let use_transaction = db_config.use_transaction.unwrap_or(false);
 
         Ok(RdbmsConfig {

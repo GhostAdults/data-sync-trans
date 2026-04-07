@@ -11,34 +11,7 @@ pub struct JobConfig {
     pub column_types: Option<BTreeMap<String, String>>,
     pub mode: Option<String>,
     pub batch_size: Option<usize>,
-    /// Reader 线程数
-    #[serde(default = "default_reader_threads")]
-    pub reader_threads: usize,
-    /// Writer 线程数
-    #[serde(default = "default_writer_threads")]
-    pub writer_threads: usize,
-    /// Channel 缓冲区大小
-    #[serde(default = "default_channel_buffer_size")]
-    pub channel_buffer_size: usize,
-    /// 是否使用事务
-    #[serde(default = "default_use_transaction")]
-    pub use_transaction: bool,
-}
-
-fn default_reader_threads() -> usize {
-    4
-}
-
-fn default_writer_threads() -> usize {
-    4
-}
-
-fn default_channel_buffer_size() -> usize {
-    1000
-}
-
-fn default_use_transaction() -> bool {
-    true
+    pub channel_buffer_size: Option<usize>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -151,39 +124,56 @@ impl JobConfig {
             timeout_secs,
         })
     }
-
-    // 解析输入类型为 database 的数据源配置
-    pub fn parse_database_config(source: &DataSourceConfig) -> Result<DbConfig> {
+    /// 支持两种格式:
+    /// - 数组: `{ "connections": [{ ... }] }` — 取第一个元素
+    /// - 对象: `{ "connection": { ... } }` — 直接使用
+    fn extract_connection(source: &DataSourceConfig) -> Result<&Value> {
         let cfg = &source.config;
-        let url = cfg
+
+        if let Some(arr) = cfg.get("connections").and_then(|v| v.as_array()) {
+            return arr
+                .first()
+                .ok_or_else(|| anyhow::anyhow!("config.connections 数组为空"));
+        }
+
+        if let Some(obj) = cfg.get("connection") {
+            return Ok(obj);
+        }
+
+        Err(anyhow::anyhow!(
+            "config 中缺少 connections 或 connection 字段"
+        ))
+    }
+
+    /// 解析 database 数据源配置（取 connections[0]）
+    pub fn parse_database_config(source: &DataSourceConfig) -> Result<DbConfig> {
+        let conn = Self::extract_connection(source)?;
+
+        let url = conn
             .get("url")
             .and_then(|v| v.as_str())
             .unwrap_or_default()
             .to_string();
-        let table = cfg
+        let table = conn
             .get("table")
             .and_then(|v| v.as_str())
             .unwrap_or_default()
             .to_string();
 
-        let key_columns = cfg.get("key_columns").and_then(|v| {
-            if let serde_json::Value::Array(arr) = v {
-                Some(
-                    arr.iter()
-                        .filter_map(|v| v.as_str().map(|s| s.to_string()))
-                        .collect(),
-                )
-            } else {
-                None
-            }
+        let key_columns = conn.get("key_columns").and_then(|v| {
+            v.as_array().map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                    .collect()
+            })
         });
 
-        let max_connections = cfg
+        let max_connections = conn
             .get("max_connections")
             .and_then(|v| v.as_u64())
             .map(|i| i as u32);
-        let acquire_timeout_secs = cfg.get("acquire_timeout_secs").and_then(|v| v.as_u64());
-        let use_transaction = cfg.get("use_transaction").and_then(|v| v.as_bool());
+        let acquire_timeout_secs = conn.get("acquire_timeout_secs").and_then(|v| v.as_u64());
+        let use_transaction = conn.get("use_transaction").and_then(|v| v.as_bool());
 
         Ok(DbConfig {
             url,
@@ -196,9 +186,12 @@ impl JobConfig {
     }
 
     pub fn get_source_db_type(source: &DataSourceConfig) -> Option<String> {
-        source
-            .config
-            .get("db_type")
+        if source.source_type != "database" {
+            return None;
+        }
+        Self::extract_connection(source)
+            .ok()
+            .and_then(|conn| conn.get("db_type"))
             .and_then(|v| v.as_str())
             .map(|s| s.to_string())
     }
@@ -223,23 +216,22 @@ impl JobConfig {
                 is_table_mode: true,
                 query_sql: None,
                 config: serde_json::json!({
-                    "db_type": "postgres",
-                    "url": "",
-                    "table": "",
-                    "key_columns": [],
-                    "max_connections": 10,
-                    "acquire_timeout_secs": 30,
-                    "use_transaction": true
+                    "connections": [{
+                        "db_type": "postgres",
+                        "url": "",
+                        "table": "",
+                        "key_columns": [],
+                        "max_connections": 10,
+                        "acquire_timeout_secs": 30,
+                        "use_transaction": true
+                    }]
                 }),
             },
             column_mapping: BTreeMap::new(),
             column_types: None,
             mode: Some("insert".to_string()),
             batch_size: Some(100),
-            reader_threads: default_reader_threads(),
-            writer_threads: default_writer_threads(),
-            channel_buffer_size: default_channel_buffer_size(),
-            use_transaction: default_use_transaction(),
+            channel_buffer_size: None,
         }
     }
 }

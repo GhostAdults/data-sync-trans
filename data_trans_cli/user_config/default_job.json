@@ -1,52 +1,52 @@
 {
-  "tasks": [
-    {
-      "id": "default",
-      "input": {
-        "name": "db_source",
-        "type": "database",
-        "config": {
-          "connections": [
-            {
-              "db_type": "mysql",
-              "url": "mysql://root:123456@127.0.0.1:3306/my_db",
-              "table": "user",
-              "key_columns": [
-                "id"
-              ],
-              "max_connections": 10,
-              "acquire_timeout_secs": 30,
-              "use_transaction": true
-            }
-          ]
+  "id": "default",
+  "input": {
+    "name": "db_source",
+    "type": "database",
+    "config": {
+      "connections": [
+        {
+          "db_type": "mysql",
+          "url": "mysql://root:123456@127.0.0.1:3306/my_db",
+          "table": "user",
+          "key_columns": [
+            "id"
+          ],
+          "max_connections": 10,
+          "acquire_timeout_secs": 30,
+          "use_transaction": true
         }
-      },
-      "output": {
-        "name": "db_target",
-        "type": "database",
-        "config": {
-          "connection": {
-            "db_type": "mysql",
-            "url": "mysql://root:123456@127.0.0.1:3306/my_db",
-            "table": "user",
-            "key_columns": [
-              "id"
-            ],
-            "max_connections": 10,
-            "acquire_timeout_secs": 30,
-            "use_transaction": true
-          }
-        }
-      },
-      "column_mapping": {
-        "example": "example"
-      },
-      "column_types": {
-        "example": "example"
-      },
-      "mode": "insert",
-      "batch_size": 100,
-      "channel_buffer_size": 1
+      ]
     }
-  ]
+  },
+  "output": {
+    "name": "db_target",
+    "type": "database",
+    "config": {
+      "connection": {
+        "db_type": "mysql",
+        "url": "mysql://root:123456@127.0.0.1:3306/my_db",
+        "table": "user_w",
+        "key_columns": [
+          "id"
+        ],
+        "max_connections": 10,
+        "acquire_timeout_secs": 30,
+        "use_transaction": true
+      }
+    }
+  },
+  "column_mapping": {
+    "id": "id",
+    "userAccount": "userAccount",
+    "userPassword": "userPassword"
+  },
+  "column_types": {
+    "id": "int",
+    "userAccount": "string",
+    "userPassword": "string"
+  },
+  "mode": "insert",
+  "batch_size": 300,
+  "channel_buffer_size": 1000
 }

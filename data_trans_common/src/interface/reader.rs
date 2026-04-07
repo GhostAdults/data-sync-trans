@@ -5,6 +5,7 @@
 //! ## [`ReaderJob`]
 //! 数据读取任务的顶层 trait，所有数据源均需实现此接口：
 //! - [`ReaderJob::split`] — 根据总记录数与并发度将数据源切分为多个 [`ReadTask`]，
+//!   `reader_threads` 参数用于指导切分粒度，通常将其设置为系统的线程数，但具体切分逻辑由具体ReaderJob实现决定，常见做法是基于 OFFSET/LIMIT 的分页切分。
 //!   切分阶段**不持有**连接池，仅用于计算分片范围
 //! - [`ReaderJob::execute_task`] — 执行单个分片任务，内部按需创建连接池并通过
 //!   `mpsc::Sender` 将数据批量推送到下游管道

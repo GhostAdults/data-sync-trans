@@ -1,6 +1,7 @@
 pub mod axum_api;
 pub mod cli;
 pub mod pipeline;
+pub mod progress;
 pub mod registry;
 pub mod runner;
 pub mod serve;

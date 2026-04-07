@@ -1,7 +1,7 @@
 pub mod core;
 pub mod dsl_engine;
 use crate::core::serve_http;
-use anyhow::{bail, Result};
+use anyhow::Result;
 use data_trans_common::app_config::config_loader::{
     apply_json_defaults, get_config_manager, CONFIG_MANAGER, WATCHER_HOLDER,
 };
@@ -11,7 +11,6 @@ use data_trans_common::app_config::value::ConfigValue;
 use data_trans_common::app_config::watcher;
 use data_trans_common::job_config::JobConfig;
 use parking_lot::RwLock;
-use regex::Regex;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -104,14 +103,6 @@ pub fn init_and_watch_config() {
             Err(e) => eprintln!("Failed to start config watcher: {}", e),
         }
     }
-}
-
-pub fn sanitize_identifier(s: &str) -> Result<()> {
-    let re = Regex::new(r"^[A-Za-z0-9_]+$").unwrap();
-    if !re.is_match(s) {
-        bail!("标识符仅允许字母、数字和下划线: {}", s);
-    }
-    Ok(())
 }
 
 pub fn read_config(path: PathBuf) -> Result<JobConfig> {

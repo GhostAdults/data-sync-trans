@@ -1,5 +1,6 @@
 use clap::Parser;
 use data_trans_core::core::cli::{run_cli, Cli};
+use data_trans_core::init_and_watch_config;
 
 fn main() {
     let cli = Cli::parse();
@@ -38,28 +39,23 @@ mod tests {
         assert!(pipeline_config.use_transaction, "use_transaction 应为 true");
     }
 
-    /// 测试系统配置优先级高于 JobConfig
+    /// 测试系统配置优先级
     #[test]
     fn test_config_priority() {
         let _ = init_system_config();
 
-        // JobConfig 中设置不同的值
-        let mut job_config = JobConfig::default_test();
-        job_config.reader_threads = 99;
-        job_config.channel_buffer_size = 99;
-        job_config.batch_size = Some(99);
-
+        let job_config = JobConfig::default_test();
         let pipeline_config = PipelineConfig::from_system_config(&job_config);
 
-        // 系统配置应覆盖 JobConfig 的 99
+        // 系统配置应生效
         assert_eq!(
             pipeline_config.reader_threads, 4,
-            "系统配置应覆盖 JobConfig"
+            "系统配置 reader_threads 应为 4"
         );
         assert_eq!(
             pipeline_config.buffer_size, 1000,
-            "系统配置应覆盖 JobConfig"
+            "系统配置 buffer_size 应为 1000"
         );
-        assert_eq!(pipeline_config.batch_size, 100, "系统配置应覆盖 JobConfig");
+        assert_eq!(pipeline_config.batch_size, 100, "系统配置 batch_size 应为 100");
     }
 }

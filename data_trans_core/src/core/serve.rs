@@ -95,6 +95,11 @@ pub async fn sync(cfg: JobConfig) -> Result<RunResult> {
     run_sync(Arc::new(cfg)).await
 }
 
+/// CLI 同步
+pub async fn sync_cli(cfg: JobConfig) -> Result<RunResult> {
+    run_sync(Arc::new(cfg)).await
+}
+
 pub async fn list_tables(q: TablesQuery) -> (StatusCode, Json<ApiResp<Vec<String>>>) {
     match get_pool_from_query(&q.base).await {
         Ok(pool) => match pool {

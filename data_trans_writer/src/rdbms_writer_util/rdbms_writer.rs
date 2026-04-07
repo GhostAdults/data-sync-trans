@@ -68,7 +68,6 @@ where
 
     async fn execute_task(&self, task: WriteTask, mut rx: mpsc::Receiver<M>) -> Result<usize> {
         println!("Writer-{} 启动", task.task_id);
-
         let pool = get_pool_from_config(&self.original_config).await?;
         let db_kind = match pool.as_ref() {
             DbPool::Postgres(_) => DbKind::Postgres,
@@ -85,8 +84,8 @@ where
                 Ok(count) => {
                     written += count;
                     if count > 0 {
-                        println!(
-                            "Writer-{} 写入 {} 条数据（累计：{}）",
+                        info!(
+                            "Writer-{} 写入中 {} 条数据（累计：{}）",
                             task.task_id, count, written
                         );
                     }
@@ -274,6 +273,7 @@ pub async fn execute_db_write(
     let executor = pool.executor();
     let mut processed = 0usize;
 
+    // 这里写入会按照 batch_size 分批执行，避免一次性写入过多数据导致数据库压力过大
     for chunk in batch.rows.chunks(batch_size) {
         executor.execute_batch(&batch.base_sql, chunk).await?;
         processed += chunk.len();

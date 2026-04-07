@@ -11,6 +11,7 @@ use std::sync::Arc;
 use tokio::sync::mpsc;
 use tracing::info;
 
+use data_trans_common::constant::pipeline::DEFAULT_BATCH_SIZE;
 use data_trans_common::interface::{ReadTask, ReaderJob, ReaderTask, SplitReaderResult};
 use data_trans_common::pipeline::RecordBuilder;
 use data_trans_common::schema::{MetadataDiscoverer, RdbmsDiscoverer, TableSchema};
@@ -108,10 +109,7 @@ impl ReaderJob for RdbmsJob {
             "Reader-{} 启动 (OFFSET={}, LIMIT={})",
             task.task_id, task.offset, task.limit
         );
-
         let sent: usize = self.read_data(&task, &tx).await?;
-
-        println!("Reader-{} 完成，共发送 {} 条数据", task.task_id, sent);
         Ok(sent)
     }
 
@@ -150,8 +148,12 @@ impl ReaderTask for RdbmsJob {
         };
         let row_stream = execute_query_stream(pool.as_ref(), &sql)?;
 
+        let batch_size = self
+            .original_config
+            .batch_size
+            .unwrap_or(DEFAULT_BATCH_SIZE);
         let mut sent = 0;
-        let mut buffer = Vec::with_capacity(100);
+        let mut buffer = Vec::with_capacity(batch_size);
 
         let mut stream = row_stream.into_inner();
 
@@ -159,7 +161,7 @@ impl ReaderTask for RdbmsJob {
             let json_row = row_result?;
             buffer.push(json_row);
 
-            if buffer.len() >= 100 {
+            if buffer.len() >= batch_size {
                 sent += self.send_batch(&buffer, tx).await?;
                 buffer.clear();
 

@@ -161,10 +161,7 @@ fn make_config(reader_type: &str, writer_type: &str) -> JobConfig {
         column_types: None,
         mode: Some("insert".to_string()),
         batch_size: Some(50),
-        reader_threads: 2,
-        writer_threads: 2,
-        channel_buffer_size: 100,
-        use_transaction: false,
+        channel_buffer_size: None,
     }
 }
 
@@ -191,9 +188,7 @@ async fn test_sync_basic() {
 async fn test_sync_single_thread() {
     ensure_mock_registered();
 
-    let mut cfg = make_config("mock", "mock");
-    cfg.reader_threads = 1;
-    cfg.writer_threads = 1;
+    let cfg = make_config("mock", "mock");
 
     let result = sync(cfg).await;
     assert!(result.is_ok());

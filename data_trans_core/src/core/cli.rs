@@ -4,8 +4,8 @@
 use crate::core::serve::*;
 use crate::run_serve;
 use clap::{Parser, Subcommand};
-use data_trans_common::{ApiConfig, JobConfig};
 use data_trans_common::db::{detect_db_kind, DbKind};
+use data_trans_common::{ApiConfig, JobConfig};
 
 use anyhow::{bail, Context, Result};
 use regex::Regex;
@@ -92,8 +92,13 @@ pub fn run_cli(cmd: Commands) {
             Ok(cfg) => {
                 let rt = Runtime::new().unwrap();
                 rt.block_on(async {
-                    if let Err(e) = sync(cfg).await {
-                        eprintln!("{}", e);
+                    match sync_cli(cfg).await {
+                        Ok(result) => {
+                            println!("SUCCESS");
+                        }
+                        Err(e) => {
+                            eprintln!("{}", e);
+                        }
                     }
                 });
             }
@@ -222,8 +227,13 @@ pub fn run_cli(cmd: Commands) {
             Ok(cfg) => {
                 let rt = Runtime::new().unwrap();
                 rt.block_on(async {
-                    if let Err(e) = sync(cfg).await {
-                        eprintln!("{}", e);
+                    match sync_cli(cfg).await {
+                        Ok(result) => {
+                            println!("{}", serde_json::to_string_pretty(&result).unwrap());
+                        }
+                        Err(e) => {
+                            eprintln!("{}", e);
+                        }
                     }
                 });
             }
@@ -256,9 +266,12 @@ fn read_config(path: PathBuf) -> Result<JobConfig> {
             serde_json::from_value(v)
         })
         .unwrap_or_else(|_| JobConfig::default_test());
-
-    let db_config = JobConfig::parse_database_config(&cfg.output)?;
-    sanitize_identifier(&db_config.table)?;
+    let db_config = JobConfig::parse_database_config(&cfg.input)?;
+    if &db_config.table != "" {
+        sanitize_identifier(&db_config.table)?;
+    } else {
+        bail!("数据库配置必须包含 table 字段");
+    }
     for k in cfg.column_mapping.keys() {
         sanitize_identifier(k)?;
     }

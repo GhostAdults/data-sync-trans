@@ -39,7 +39,7 @@ pub mod db {
 
 pub mod pipeline {
     /// 默认批处理大小
-    pub const DEFAULT_BATCH_SIZE: usize = 100;
+    pub const DEFAULT_BATCH_SIZE: usize = 200;
 
     /// 默认缓冲区大小
     pub const DEFAULT_BUFFER_SIZE: usize = 1000;

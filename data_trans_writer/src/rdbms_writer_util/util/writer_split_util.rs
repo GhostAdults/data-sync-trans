@@ -5,6 +5,7 @@ use std::sync::Arc;
 use data_trans_common::job_config::DbConfig;
 use data_trans_common::JobConfig;
 
+use data_trans_common::constant::pipeline::DEFAULT_BATCH_SIZE;
 use data_trans_common::interface::{SplitWriterResult, WriteMode, WriteTask};
 
 /// 切分 Writer 任务
@@ -15,7 +16,7 @@ pub fn do_split(original_config: &Arc<JobConfig>, advice_number: usize) -> Split
         .map(WriteMode::from_str)
         .unwrap_or(WriteMode::Insert);
 
-    let batch_size = original_config.batch_size.unwrap_or(100);
+    let batch_size = original_config.batch_size.unwrap_or(DEFAULT_BATCH_SIZE);
 
     let db_config = DbConfig::default();
     let use_transaction = db_config.use_transaction.unwrap_or(false);

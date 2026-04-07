@@ -123,7 +123,8 @@ async fn main() -> Result<()> {
     println!("========================================");
 
     // 读取配置文件
-    let config_content = include_str!("../defaults.json");
+    let config_content =
+        include_str!("E:\\github\\Relus\\data_trans_cli\\user_config\\default_job.json");
     let configs: serde_json::Value = serde_json::from_str(config_content)?;
 
     // 获取数据库配置
@@ -159,10 +160,7 @@ async fn main() -> Result<()> {
         column_types: None,
         mode: Some("insert".to_string()),
         batch_size: Some(100),
-        reader_threads: 4,
-        writer_threads: 4,
-        channel_buffer_size: 1000,
-        use_transaction: true,
+        channel_buffer_size: None,
     };
 
     // 创建连接池
