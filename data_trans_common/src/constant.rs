@@ -8,6 +8,12 @@ pub mod schema {
     pub const SCHEMA_VERSION_INITIAL: u64 = 1;
 }
 
+pub mod key {
+    /// 主键列默认名称
+    pub const DEFAULT_KEY_COLUMN: &str = "id";
+    pub const SPLIT_FACTOR: usize = 5;
+}
+
 pub mod db {
     /// 默认最大连接数
     pub const DEFAULT_MAX_CONNECTIONS: u32 = 10;

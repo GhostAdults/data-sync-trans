@@ -2,7 +2,7 @@
 //!
 //! 基于 indicatif MultiProgress，Reader/Writer 通过 ProgressBar::inc 实时递增。
 
-use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
+use indicatif::{MultiProgress, ProgressBar, ProgressDrawTarget, ProgressStyle};
 
 /// 进度条上下文
 pub struct ProgressContext {
@@ -13,9 +13,9 @@ pub struct ProgressContext {
 }
 
 fn bar_style() -> ProgressStyle {
-    ProgressStyle::with_template("[{elapsed_precise}] {bar:40.cyan/blue} {pos:>7}/{len:7} {msg}")
+    ProgressStyle::with_template("[{elapsed_precise}] {bar:40.green} {pos:>7}/{len:7} {msg}")
         .unwrap()
-        .progress_chars("##-")
+        .progress_chars("█ ")
 }
 
 fn spinner_style() -> ProgressStyle {
@@ -24,6 +24,7 @@ fn spinner_style() -> ProgressStyle {
 
 pub fn create_progress_bars(total_records: usize) -> ProgressContext {
     let multi = MultiProgress::new();
+    multi.set_draw_target(ProgressDrawTarget::stderr()); //防止进度条被日志输出干扰，保持在终端底部显示
     let sty = bar_style();
     let spin_sty = spinner_style();
 
@@ -33,7 +34,10 @@ pub fn create_progress_bars(total_records: usize) -> ProgressContext {
         rb.set_prefix("Reader");
         rb.set_message("reading");
 
-        let wb = multi.add(ProgressBar::new(total_records as u64));
+        let spacer = multi.insert_after(&rb, ProgressBar::new(0));
+        spacer.set_style(ProgressStyle::with_template("").unwrap());
+
+        let wb = multi.insert_after(&spacer, ProgressBar::new(total_records as u64));
         wb.set_style(sty);
         wb.set_prefix("Writer");
         wb.set_message("writing");
@@ -45,7 +49,10 @@ pub fn create_progress_bars(total_records: usize) -> ProgressContext {
         rb.set_prefix("Reader");
         rb.set_message("reading");
 
-        let wb = multi.add(ProgressBar::new_spinner());
+        let spacer = multi.insert_after(&rb, ProgressBar::new(0));
+        spacer.set_style(ProgressStyle::with_template("").unwrap());
+
+        let wb = multi.insert_after(&spacer, ProgressBar::new_spinner());
         wb.set_style(spin_sty);
         wb.set_prefix("Writer");
         wb.set_message("writing");
@@ -62,23 +69,10 @@ pub fn create_progress_bars(total_records: usize) -> ProgressContext {
 }
 
 impl ProgressContext {
-    pub fn finish(self, elapsed_secs: f64) {
-        let read = self.reader_bar.position() as usize;
-        let written = self.writer_bar.position() as usize;
-
+    pub fn finish(&self) {
         self.reader_bar.finish_with_message("done");
         self.writer_bar.finish_with_message("done");
-
-        let throughput = if elapsed_secs > 0.0 {
-            written as f64 / elapsed_secs
-        } else {
-            0.0
-        };
-
-        self.multi.clear().ok();
-        println!(
-            "完成: 读取 {} 条, 写入 {} 条, 耗时 {:.2}s, 吞吐 {:.0} 条/秒",
-            read, written, elapsed_secs, throughput
-        );
+        // summary
+        self.multi.println("All tasks completed!").unwrap();
     }
 }

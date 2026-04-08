@@ -67,7 +67,6 @@ where
     }
 
     async fn execute_task(&self, task: WriteTask, mut rx: mpsc::Receiver<M>) -> Result<usize> {
-        println!("Writer-{} 启动", task.task_id);
         let pool = get_pool_from_config(&self.original_config).await?;
         let db_kind = match pool.as_ref() {
             DbPool::Postgres(_) => DbKind::Postgres,

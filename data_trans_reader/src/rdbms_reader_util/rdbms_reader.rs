@@ -8,6 +8,7 @@ use futures::StreamExt;
 use serde_json::Value as JsonValue;
 use std::collections::BTreeMap;
 use std::sync::Arc;
+use std::usize;
 use tokio::sync::mpsc;
 use tracing::info;
 
@@ -105,10 +106,6 @@ impl ReaderJob for RdbmsJob {
         task: ReadTask,
         tx: mpsc::Sender<PipelineMessage>,
     ) -> Result<usize> {
-        println!(
-            "Reader-{} 启动 (OFFSET={}, LIMIT={})",
-            task.task_id, task.offset, task.limit
-        );
         let sent: usize = self.read_data(&task, &tx).await?;
         Ok(sent)
     }
@@ -235,18 +232,19 @@ pub fn execute_query_stream<'a>(pool: &'a DbPool, sql: &'a str) -> Result<DbRowS
     Ok(DbRowStream { stream })
 }
 
-// 获取当前表数据count
+// 获取当前数据count
 pub async fn count_total_records(pool: &DbPool, table: &str, query: Option<&str>) -> Result<usize> {
     let sql = if let Some(custom_query) = query {
         format!("SELECT COUNT(*) FROM ({}) AS subquery", custom_query)
     } else {
         format!("SELECT COUNT(*) FROM {}", table)
     };
-
-    let count: i64 = match pool {
-        DbPool::Postgres(pg_pool) => sqlx::query_scalar(&sql).fetch_one(pg_pool).await?,
-        DbPool::Mysql(my_pool) => sqlx::query_scalar(&sql).fetch_one(my_pool).await?,
-    };
-
-    Ok(count as usize)
+    let result = pool.executor().fetch_column_pair(&sql).await?;
+    match result.0 {
+        Some(cv) => cv
+            .into_string()
+            .and_then(|s| s.parse::<usize>().ok())
+            .ok_or_else(|| anyhow::anyhow!("解析记录数失败")),
+        None => Ok(0),
+    }
 }

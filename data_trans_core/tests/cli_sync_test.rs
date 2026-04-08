@@ -7,10 +7,11 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use data_trans_common::interface::{
-    GlobalRegistry, PipelineMessage, ReadTask, ReaderJob, SplitReaderResult, SplitWriterResult,
-    WriteMode, WriteTask, WriterJob,
+    GlobalRegistry, ReadTask, ReaderJob, SplitReaderResult, SplitWriterResult, WriteMode,
+    WriteTask, WriterJob,
 };
 use data_trans_common::job_config::{DataSourceConfig, JobConfig};
+use data_trans_common::pipeline::PipelineMessage;
 use data_trans_common::types::{MappingRow, UnifiedValue};
 use data_trans_core::core::runner::RunStatus;
 use data_trans_core::core::serve::sync;
@@ -55,11 +56,7 @@ impl ReaderJob for MockReader {
             let rows: Vec<MappingRow> = (0..count)
                 .map(|i| {
                     let mut row = MappingRow::simple();
-                    row.insert_simple(
-                        "id",
-                        UnifiedValue::Int((task.offset + i) as i64),
-                        "int",
-                    );
+                    row.insert_simple("id", UnifiedValue::Int((task.offset + i) as i64), "int");
                     row.insert_simple(
                         "name",
                         UnifiedValue::String(format!("user_{}", task.offset + i)),
@@ -128,12 +125,8 @@ impl WriterJob<PipelineMessage> for MockWriter {
 fn ensure_mock_registered() {
     let registry = GlobalRegistry::instance();
     // 可重复调用，后注册覆盖前次
-    registry.register_reader("mock", |_config: Arc<JobConfig>| {
-        Ok(Box::new(MockReader))
-    });
-    registry.register_writer("mock", |_config: Arc<JobConfig>| {
-        Ok(Box::new(MockWriter))
-    });
+    registry.register_reader("mock", |_config: Arc<JobConfig>| Ok(Box::new(MockReader)));
+    registry.register_writer("mock", |_config: Arc<JobConfig>| Ok(Box::new(MockWriter)));
 }
 
 fn make_config(reader_type: &str, writer_type: &str) -> JobConfig {

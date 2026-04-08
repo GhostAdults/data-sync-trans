@@ -1,4 +1,5 @@
 pub mod client_tool;
+pub mod range_split_util;
 pub mod reader_split_util;
 
 // Re-export commonly used types from data_trans_common

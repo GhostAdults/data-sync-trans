@@ -94,7 +94,13 @@ pub fn run_cli(cmd: Commands) {
                 rt.block_on(async {
                     match sync_cli(cfg).await {
                         Ok(result) => {
-                            println!("SUCCESS");
+                            println!(
+                                "完成: 读取 {} 条, 写入 {} 条, 耗时 {:.2}s, 吞吐 {:.0} 条/秒",
+                                result.stats.records_read,
+                                result.stats.records_written,
+                                result.stats.elapsed_secs,
+                                result.stats.throughput
+                            );
                         }
                         Err(e) => {
                             eprintln!("{}", e);

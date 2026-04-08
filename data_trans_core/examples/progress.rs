@@ -6,7 +6,7 @@ use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use rand::RngExt;
 
 fn main() {
-    let m = MultiProgress::new();
+    let m: MultiProgress = MultiProgress::new();
     let sty = ProgressStyle::with_template(
         "[{elapsed_precise}] {bar:40.cyan/blue} {pos:>7}/{len:7} {msg}",
     )
@@ -21,7 +21,7 @@ fn main() {
     pb2.set_style(sty.clone());
     pb2.set_message("finished");
 
-    let pb3 = m.insert_after(&pb2, ProgressBar::new(1024));
+    let pb3: ProgressBar = m.insert_after(&pb2, ProgressBar::new(1024));
     pb3.set_style(sty);
 
     m.println("starting!").unwrap();
@@ -29,7 +29,7 @@ fn main() {
     let mut threads = vec![];
 
     let m_clone = m.clone();
-    let h3 = thread::spawn(move || {
+    let h3: thread::JoinHandle<()> = thread::spawn(move || {
         for i in 0..1024 {
             thread::sleep(Duration::from_millis(2));
             pb3.set_message(format!("item #{}", i + 1));
@@ -58,5 +58,6 @@ fn main() {
     }
     let _ = h3.join();
     pb2.finish_with_message("all jobs done");
-    m.clear().unwrap();
+    // 让进度条完成后保留在终端输出中
+    m.println("all tasks completed!").unwrap();
 }

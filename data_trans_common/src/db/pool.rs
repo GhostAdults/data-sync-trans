@@ -66,6 +66,7 @@ async fn create_pool(cfg: &PoolConfig) -> Result<DbPool> {
 }
 
 /// Get or create a database connection pool
+/// 如果存在相同配置的连接池则返回，否则创建新的连接池并缓存
 pub async fn get_db_pool(
     url: &str,
     kind: DbKind,
@@ -80,12 +81,10 @@ pub async fn get_db_pool(
         timeout_secs,
     };
     if let Some(pool) = pools.get(&key) {
-        println!("获取一次连接池，当前连接池数量: {}", pools.len());
         return Ok(pool.clone());
     }
 
     let pool = create_pool(&key).await?;
-    println!("创建新的数据库连接池: {:?}", key);
     pools.insert(key, pool.clone());
     Ok(pool)
 }
@@ -113,11 +112,43 @@ pub async fn get_pool_from_query<T: DbParams>(q: &T) -> Result<DbPool> {
     get_db_pool(&db_url, kind, 5, None).await
 }
 
+/// 查询列值的动态类型承载
+#[derive(Debug, Clone)]
+pub enum ColumnValue {
+    Int(i64),
+    Float(f64),
+    Text(String),
+    Null,
+}
+
+impl ColumnValue {
+    pub fn into_string(self) -> Option<String> {
+        match self {
+            ColumnValue::Int(n) => Some(n.to_string()),
+            ColumnValue::Float(n) => Some(n.to_string()),
+            ColumnValue::Text(s) => Some(s),
+            ColumnValue::Null => None,
+        }
+    }
+
+    pub fn is_numeric(&self) -> bool {
+        matches!(self, ColumnValue::Int(_) | ColumnValue::Float(_))
+    }
+}
+
 /// Database executor trait for common operations
 #[async_trait]
 pub trait DbExecutor: Send + Sync {
+    // 返回两列字符串的查询结果
     async fn fetch_string_pair(&self, sql: &str) -> Result<(Option<String>, Option<String>)>;
     async fn fetch_optional_string(&self, sql: &str) -> Result<Option<String>>;
+
+    /// 泛型查询：返回两列的动态类型值
+    async fn fetch_column_pair(
+        &self,
+        sql: &str,
+    ) -> Result<(Option<ColumnValue>, Option<ColumnValue>)>;
+
     async fn execute(&self, sql: &str) -> Result<u64>;
 
     /// 执行带参数的 SQL
@@ -150,6 +181,14 @@ impl DbExecutor for PgExecutorRef {
     async fn fetch_optional_string(&self, sql: &str) -> Result<Option<String>> {
         let result: Option<(String,)> = sqlx::query_as(sql).fetch_optional(&self.pool).await?;
         Ok(result.map(|r| r.0))
+    }
+
+    async fn fetch_column_pair(
+        &self,
+        sql: &str,
+    ) -> Result<(Option<ColumnValue>, Option<ColumnValue>)> {
+        let row = sqlx::query(sql).fetch_one(&self.pool).await?;
+        Ok((pg_column_value(&row, 0), pg_column_value(&row, 1)))
     }
 
     async fn execute(&self, sql: &str) -> Result<u64> {
@@ -201,6 +240,34 @@ impl DbExecutor for PgExecutorRef {
     }
 }
 
+fn pg_column_value(row: &sqlx::postgres::PgRow, idx: usize) -> Option<ColumnValue> {
+    use sqlx::Row;
+    if let Ok(Some(v)) = row.try_get::<Option<i64>, _>(idx) {
+        return Some(ColumnValue::Int(v));
+    }
+    if let Ok(Some(v)) = row.try_get::<Option<f64>, _>(idx) {
+        return Some(ColumnValue::Float(v));
+    }
+    if let Ok(Some(v)) = row.try_get::<Option<String>, _>(idx) {
+        return Some(ColumnValue::Text(v));
+    }
+    None
+}
+
+fn mysql_column_value(row: &sqlx::mysql::MySqlRow, idx: usize) -> Option<ColumnValue> {
+    use sqlx::Row;
+    if let Ok(Some(v)) = row.try_get::<Option<i64>, _>(idx) {
+        return Some(ColumnValue::Int(v));
+    }
+    if let Ok(Some(v)) = row.try_get::<Option<f64>, _>(idx) {
+        return Some(ColumnValue::Float(v));
+    }
+    if let Ok(Some(v)) = row.try_get::<Option<String>, _>(idx) {
+        return Some(ColumnValue::Text(v));
+    }
+    None
+}
+
 fn bind_typed_val_pg<'q>(
     mut q: sqlx::query::Query<'q, sqlx::Postgres, sqlx::postgres::PgArguments>,
     v: &UnifiedValue,
@@ -243,6 +310,14 @@ impl DbExecutor for MySqlExecutorRef {
     async fn fetch_optional_string(&self, sql: &str) -> Result<Option<String>> {
         let result: Option<(String,)> = sqlx::query_as(sql).fetch_optional(&self.pool).await?;
         Ok(result.map(|r| r.0))
+    }
+
+    async fn fetch_column_pair(
+        &self,
+        sql: &str,
+    ) -> Result<(Option<ColumnValue>, Option<ColumnValue>)> {
+        let row = sqlx::query(sql).fetch_one(&self.pool).await?;
+        Ok((mysql_column_value(&row, 0), mysql_column_value(&row, 1)))
     }
 
     async fn execute(&self, sql: &str) -> Result<u64> {

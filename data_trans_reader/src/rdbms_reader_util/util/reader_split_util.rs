@@ -2,10 +2,15 @@ use crate::rdbms_reader_util::rdbms_reader::count_total_records;
 use crate::rdbms_reader_util::util::{build_select_query, get_pool_from_config, DbPool};
 use crate::RdbmsJob;
 use anyhow::Result;
+use data_trans_common::constant::key::SPLIT_FACTOR;
 use data_trans_common::interface::{ReadTask, SplitReaderResult};
 use serde_json::Value as JsonValue;
 use tracing::warn;
 
+/// Reader 切分工具
+/// 如果need_split_table为true，优先尝试主键切分；如果失败则回退到LIMIT/OFFSET切分；如果不需要切分，则构建单个任务。
+/// has_split_pk: 是否存在可用的主键用于切分
+/// each_table_should_split: 每个表建议切分的片数 (advice_number / table_number)
 pub async fn do_split(rdbms_job: &RdbmsJob, advice_number: usize) -> SplitReaderResult {
     let config = &rdbms_job.config;
 
@@ -19,9 +24,22 @@ pub async fn do_split(rdbms_job: &RdbmsJob, advice_number: usize) -> SplitReader
             };
         }
     };
-
+    // 计算总行数
+    let total_records = match count_total_records(
+        &pool,
+        &config.table,
+        config
+            .query_sql
+            .as_ref()
+            .and_then(|v| v.first())
+            .map(|s| s.as_str()),
+    )
+    .await
+    {
+        Ok(count) => count,
+        Err(_) => 0,
+    };
     let data_source_config = &rdbms_job.original_config.input.config;
-
     let conns: Vec<JsonValue> = data_source_config
         .get("connections")
         .and_then(|v| v.as_array())
@@ -51,7 +69,8 @@ pub async fn do_split(rdbms_job: &RdbmsJob, advice_number: usize) -> SplitReader
 
         if need_split_table {
             if config.table_count == 1usize {
-                let split_factor = config.split_factor.unwrap_or(5);
+                // split_factor是切分倍数,如果只有一张表，且需要切分，则可以适当增加切分片数以提高并行度
+                let split_factor = config.split_factor.unwrap_or(SPLIT_FACTOR);
                 each_table_should_split = each_table_should_split * split_factor;
             }
             // 进行单表的切分
@@ -66,15 +85,16 @@ pub async fn do_split(rdbms_job: &RdbmsJob, advice_number: usize) -> SplitReader
             {
                 Ok(split_tasks) => tasks.extend(split_tasks),
                 Err(e) => {
-                    warn!("主键切分失败，回退到 LIMIT/OFFSET 模式: {:?}", e);
-                    tasks = split_by_limit_offset(config, each_table_should_split, &conns);
+                    println!("主键切分失败，回退到 LIMIT/OFFSET 模式: {:?}", e);
+                    tasks = split_by_limit_offset(
+                        config,
+                        each_table_should_split,
+                        total_records,
+                        &conns,
+                    );
                 }
             }
         } else {
-            println!(
-                "表模式不切分: {} 个表, 每表建议分 {} 片, has_split_pk={}",
-                table_number, each_table_should_split, has_split_pk
-            );
             tasks = build_single_task(config, &conns);
         }
         // 直接使用sql 构建
@@ -93,17 +113,18 @@ pub async fn do_split(rdbms_job: &RdbmsJob, advice_number: usize) -> SplitReader
             });
         }
     }
-    let total_records = match count_total_records(
-        &pool,
-        &config.table,
-        config.query_sql.as_ref().and_then(|v| v.first()).map(|s| s.as_str()),
-    )
-    .await
-    {
-        Ok(count) => count,
-        Err(_) => 0,
-    };
-
+    println!(
+        "sql{}",
+        tasks
+            .iter()
+            .map(|t| format!(
+                "[task_id: {}, sql: {}]",
+                t.task_id,
+                t.query_sql.as_deref().unwrap_or("")
+            ))
+            .collect::<Vec<String>>()
+            .join(", ")
+    );
     SplitReaderResult {
         total_records,
         tasks,
@@ -146,7 +167,7 @@ async fn split_by_pk(
     shard_count: usize,
     conns: &[JsonValue],
 ) -> Result<Vec<ReadTask>> {
-    let (min_pk, max_pk) = get_pk_range(
+    let (min_cv, max_cv) = get_pk_range(
         pool,
         &config.table,
         split_pk,
@@ -154,15 +175,28 @@ async fn split_by_pk(
     )
     .await?;
 
+    let is_numeric = min_cv.as_ref().map_or(false, |v| v.is_numeric())
+        || max_cv.as_ref().map_or(false, |v| v.is_numeric());
+
+    let min_str = min_cv.and_then(|v| v.into_string());
+    let max_str = max_cv.and_then(|v| v.into_string());
+
     let mut tasks = Vec::new();
 
-    let ranges = if is_numeric_pk(pool, &config.table, split_pk)
-        .await
-        .unwrap_or(false)
-    {
-        split_by_numeric_pk(min_pk.as_deref(), max_pk.as_deref(), shard_count, split_pk)
+    let ranges = if is_numeric {
+        split_by_numeric_pk(
+            min_str.as_deref(),
+            max_str.as_deref(),
+            shard_count,
+            split_pk,
+        )
     } else {
-        split_by_string_pk(min_pk.as_deref(), max_pk.as_deref(), shard_count, split_pk)
+        split_by_string_pk(
+            min_str.as_deref(),
+            max_str.as_deref(),
+            shard_count,
+            split_pk,
+        )
     };
 
     for (i, range) in ranges.iter().enumerate() {
@@ -206,17 +240,26 @@ async fn split_by_pk(
 fn split_by_limit_offset(
     config: &crate::RdbmsConfig,
     shard_count: usize,
+    total_records: usize,
     conns: &[JsonValue],
 ) -> Vec<ReadTask> {
-    let mut tasks = Vec::new();
-    let shard_size = 100;
-    for i in 0..shard_count {
+    if total_records == 0 || shard_count == 0 {
+        return vec![];
+    }
+
+    let shard_size = (total_records + shard_count - 1) / shard_count;
+    let actual_count = (total_records + shard_size - 1) / shard_size;
+
+    let mut tasks = Vec::with_capacity(actual_count);
+    for i in 0..actual_count {
         let offset = i * shard_size;
+        let remaining = total_records.saturating_sub(offset);
+        let limit = shard_size.min(remaining);
         let query_sql = build_limit_offset_sql(
             &config.table,
             &config.columns,
             config.where_clause.as_deref(),
-            shard_size,
+            limit,
             offset,
         );
         let conn = conns
@@ -228,7 +271,7 @@ fn split_by_limit_offset(
             conn,
             query_sql: Some(query_sql),
             offset,
-            limit: shard_size,
+            limit,
         });
     }
     tasks
@@ -253,7 +296,10 @@ async fn get_pk_range(
     table: &str,
     split_pk: &str,
     where_clause: Option<&str>,
-) -> Result<(Option<String>, Option<String>)> {
+) -> Result<(
+    Option<data_trans_common::ColumnValue>,
+    Option<data_trans_common::ColumnValue>,
+)> {
     let where_cond = match where_clause {
         Some(w) => format!(" WHERE ({}) AND {} IS NOT NULL", w, split_pk),
         None => format!(" WHERE {} IS NOT NULL", split_pk),
@@ -263,28 +309,7 @@ async fn get_pk_range(
         split_pk, split_pk, table, where_cond
     );
 
-    pool.executor().fetch_string_pair(&sql).await
-}
-
-async fn is_numeric_pk(pool: &DbPool, table: &str, split_pk: &str) -> Result<bool> {
-    let sql = format!(
-        "SELECT data_type FROM information_schema.columns WHERE table_name = '{}' AND column_name = '{}'",
-        table, split_pk
-    );
-
-    let data_type = pool.executor().fetch_optional_string(&sql).await?;
-
-    let is_numeric = data_type
-        .map(|dt| {
-            let dt_lower = dt.to_lowercase();
-            dt_lower.contains("int")
-                || dt_lower.contains("bigint")
-                || dt_lower.contains("smallint")
-                || dt_lower.contains("tinyint")
-        })
-        .unwrap_or(false);
-
-    Ok(is_numeric)
+    pool.executor().fetch_column_pair(&sql).await
 }
 
 fn split_by_numeric_pk(
@@ -325,14 +350,21 @@ fn split_by_numeric_pk(
 fn split_by_string_pk(
     min: Option<&str>,
     max: Option<&str>,
-    _count: usize,
+    count: usize,
     pk: &str,
 ) -> Vec<PkRange> {
-    vec![PkRange::Range {
-        pk: pk.to_string(),
-        min: min.unwrap_or("").to_string(),
-        max: max.unwrap_or("").to_string(),
-    }]
+    let min_val = min.unwrap_or("");
+    let max_val = max.unwrap_or("");
+
+    if count > 1 {
+        super::range_split_util::do_ascii_string_split(min_val, max_val, pk, count, 128)
+    } else {
+        vec![PkRange::Range {
+            pk: pk.to_string(),
+            min: min_val.to_string(),
+            max: max_val.to_string(),
+        }]
+    }
 }
 
 fn build_range_query_sql(

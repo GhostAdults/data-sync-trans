@@ -14,6 +14,9 @@ use data_trans_common::constant::pipeline::{
 };
 use data_trans_common::interface::{ReaderJob, WriterJob};
 use data_trans_common::pipeline::PipelineMessage;
+use futures::future::BoxFuture;
+use futures::stream::FuturesUnordered;
+use futures::{FutureExt, StreamExt}; // for .boxed() .next()
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::Instant;
@@ -25,6 +28,11 @@ use super::progress::create_progress_bars;
 // ==========================================
 // 配置
 // ==========================================
+
+enum TaskResult {
+    Reader(usize, Result<usize, anyhow::Error>),
+    Writer(usize, Result<usize, anyhow::Error>),
+}
 
 /// 管道配置
 #[derive(Debug, Clone)]
@@ -126,7 +134,7 @@ async fn run_paired_pipeline(
 ) -> Result<PipelineStats> {
     let start_time = Instant::now();
 
-    // 1. 先 split Reader，得到 Task 数量
+    // 先 split Reader，得到 Task 数量
     let reader_split = reader.split(config.reader_threads).await?;
     let task_count = reader_split.tasks.len();
     info!(
@@ -138,17 +146,17 @@ async fn run_paired_pipeline(
         info!("无读取任务，Pipeline 结束");
         return Ok(PipelineStats::default());
     }
-
+    // 进度条
     let progress_ctx = create_progress_bars(reader_split.total_records);
 
-    // 2. 以 Reader Task 数量 split Writer，保证 1:1
+    // 以 Reader Task 数量 split Writer，保证 1:1
     let writer_split = writer.split(task_count).await?;
     info!(
         "Writer: 切分为 {} 个任务（与 Reader 1:1 配对）",
         writer_split.tasks.len()
     );
 
-    // 修复问题6：配对不足直接报错，避免静默丢数据
+    // 配对不足直接报错，避免静默丢数据
     if writer_split.tasks.len() < task_count {
         return Err(anyhow::anyhow!(
             "Writer 只产出 {} 个任务，但有 {} 个 Reader 任务，无法完全配对",
@@ -157,12 +165,11 @@ async fn run_paired_pipeline(
         ));
     }
 
-    // 3. 快速失败：通过 cancel 信号通知所有任务终止
+    // 快速失败：通过 cancel 信号通知所有任务终止
     let cancel = Arc::new(tokio::sync::Notify::new());
 
-    // 4. 为每对创建独立 channel + spawn 任务
+    // 为每对创建独立 channel + spawn 任务
     let mut pair_handles = Vec::with_capacity(task_count);
-
     for i in 0..task_count {
         let (tx, rx) = mpsc::channel(config.buffer_size);
 
@@ -206,7 +213,7 @@ async fn run_paired_pipeline(
                         // Writer 失败也要通知其他 Pair 终止
                         cancel_w.notify_waiters();
                     }
-                    result
+                   result
                 }
                 () = cancel_w.notified() => {
                     warn!("Writer-{} 被取消（其他任务失败）", i);
@@ -218,53 +225,67 @@ async fn run_paired_pipeline(
         pair_handles.push((r_handle, w_handle));
     }
 
-    // 5. 等待所有 Pair 完成（Reader 先完成，Writer 后完成）
+    let mut tasks: FuturesUnordered<BoxFuture<'static, TaskResult>> = FuturesUnordered::new();
+    for (i, (r_handle, w_handle)) in pair_handles.into_iter().enumerate() {
+        // reader
+        tasks.push(
+            async move {
+                let res = r_handle.await;
+                TaskResult::Reader(
+                    i,
+                    match res {
+                        Ok(r) => r,
+                        Err(e) => Err(anyhow::anyhow!("Reader-{} 任务崩溃: {}", i, e)),
+                    },
+                )
+            }
+            .boxed(),
+        );
+        // writer
+        tasks.push(
+            async move {
+                let res = w_handle.await;
+                TaskResult::Writer(
+                    i,
+                    match res {
+                        Ok(r) => r,
+                        Err(e) => Err(anyhow::anyhow!("Writer-{} 任务崩溃: {}", i, e)),
+                    },
+                )
+            }
+            .boxed(),
+        );
+    }
+
+    // 等待所有 Pair 完成
     let mut total_read = 0;
     let mut total_written = 0;
     let mut any_failed = false;
     let mut first_error: Option<anyhow::Error> = None;
-
-    for (i, (r_handle, w_handle)) in pair_handles.into_iter().enumerate() {
-        match r_handle.await {
-            Ok(Ok(count)) => {
+    while let Some(result) = tasks.next().await {
+        match result {
+            TaskResult::Reader(i, Ok(count)) => {
                 total_read += count;
                 progress_ctx.reader_bar.inc(count as u64);
                 info!("Reader-{} 完成，读取 {} 条", i, count);
             }
-            Ok(Err(e)) => {
+            TaskResult::Reader(i, Err(e)) => {
                 error!("Reader-{} 失败: {}", i, e);
                 any_failed = true;
                 if first_error.is_none() {
                     first_error = Some(e);
                 }
             }
-            Err(e) => {
-                error!("Reader-{} 任务崩溃: {}", i, e);
-                any_failed = true;
-                if first_error.is_none() {
-                    first_error = Some(anyhow::anyhow!("Reader-{} 任务崩溃: {}", i, e));
-                }
-            }
-        }
-
-        match w_handle.await {
-            Ok(Ok(count)) => {
+            TaskResult::Writer(i, Ok(count)) => {
                 total_written += count;
                 progress_ctx.writer_bar.inc(count as u64);
                 info!("Writer-{} 完成，写入 {} 条", i, count);
             }
-            Ok(Err(e)) => {
+            TaskResult::Writer(i, Err(e)) => {
                 error!("Writer-{} 失败: {}", i, e);
                 any_failed = true;
                 if first_error.is_none() {
                     first_error = Some(e);
-                }
-            }
-            Err(e) => {
-                error!("Writer-{} 任务崩溃: {}", i, e);
-                any_failed = true;
-                if first_error.is_none() {
-                    first_error = Some(anyhow::anyhow!("Writer-{} 任务崩溃: {}", i, e));
                 }
             }
         }
@@ -281,16 +302,7 @@ async fn run_paired_pipeline(
     stats.records_failed = stats.records_failed();
     stats.calculate_throughput();
 
-    progress_ctx.finish(stats.elapsed_secs);
-
-    info!(
-        "Pipeline 完成: 读取 {} 条, 写入 {} 条, 失败 {} 条, 耗时 {:.2}s, 吞吐 {:.2} 条/秒",
-        stats.records_read,
-        stats.records_written,
-        stats.records_failed,
-        stats.elapsed_secs,
-        stats.throughput
-    );
+    progress_ctx.finish();
 
     if any_failed {
         return Err(first_error.unwrap_or_else(|| anyhow::anyhow!("Pipeline 执行存在失败任务")));
