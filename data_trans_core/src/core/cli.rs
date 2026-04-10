@@ -3,6 +3,7 @@
 
 use crate::core::serve::*;
 use crate::run_serve;
+use axum::http::request::Builder;
 use clap::{Parser, Subcommand};
 use data_trans_common::db::{detect_db_kind, DbKind};
 use data_trans_common::{ApiConfig, JobConfig};
@@ -90,7 +91,12 @@ pub fn run_cli(cmd: Commands) {
         }
         Commands::Sync { config } => match read_config(config) {
             Ok(cfg) => {
-                let rt = Runtime::new().unwrap();
+                // let rt = Runtime::new().unwrap();
+                let rt = tokio::runtime::Builder::new_multi_thread()
+                    .worker_threads(4)
+                    .enable_all()
+                    .build()
+                    .unwrap();
                 rt.block_on(async {
                     match sync_cli(cfg).await {
                         Ok(result) => {

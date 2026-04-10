@@ -357,7 +357,9 @@ fn split_by_string_pk(
     let max_val = max.unwrap_or("");
 
     if count > 1 {
-        super::range_split_util::do_ascii_string_split(min_val, max_val, pk, count, 128)
+        // super::range_split_util::do_ascii_string_split(min_val, max_val, pk, count, 128)
+        // 这个方法通过ascii 所以redix必须固定128
+        super::range_split_util::do_hex_string_split(min_val, max_val, pk, count, 128)
     } else {
         vec![PkRange::Range {
             pk: pk.to_string(),
@@ -375,14 +377,28 @@ fn build_range_query_sql(
 ) -> String {
     let base: String = build_select_query(columns, table);
     let range_cond = match range {
-        PkRange::Range { pk, min, max } => format!("{} >= {} AND {} < {}", pk, min, pk, max),
-        PkRange::Inclusive { pk, min, max } => format!("{} >= {} AND {} <= {}", pk, min, pk, max),
+        PkRange::Range { pk, min, max } => {
+            let min_q = quote_string_value(min);
+            let max_q = quote_string_value(max);
+            format!("{} >= {} AND {} < {}", pk, min_q, pk, max_q)
+        }
+        PkRange::Inclusive { pk, min, max } => {
+            let min_q = quote_string_value(min);
+            let max_q = quote_string_value(max);
+            format!("{} >= {} AND {} <= {}", pk, min_q, pk, max_q)
+        }
     };
 
     match where_clause {
         Some(w) => format!("{} WHERE ({}) AND ({})", base, w, range_cond),
         None => format!("{} WHERE {}", base, range_cond),
     }
+}
+
+// todo 防止出现单引号导致的SQL语法错误，应该对字符串进行转义处理
+fn quote_string_value(s: &str) -> String {
+    let escaped = s.replace('\'', "''");
+    format!("'{}'", escaped)
 }
 
 fn build_null_pk_query_sql(

@@ -7,7 +7,7 @@ edition = "2021"
 data_trans_common = { path = "../data_trans_common" }
 data_trans_reader = { path = "../data_trans_reader" }
 
-tracing = "0.1"
+tracing = { workspace = true }
 anyhow = "1.0"
 async-trait = "0.1"
 tokio = { workspace = true, features = ["sync", "macros"] }

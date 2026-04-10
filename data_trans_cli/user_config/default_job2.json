@@ -9,10 +9,8 @@
         {
           "db_type": "mysql",
           "url": "mysql://root:123456@127.0.0.1:3306/my_db",
-          "table": "sys_iot_device_wx",
-          "key_columns": [
-            "id"
-          ],
+          "table": "user",
+          "key_columns": ["id"],
           "max_connections": 10,
           "acquire_timeout_secs": 30,
           "use_transaction": true
@@ -27,10 +25,8 @@
       "connection": {
         "db_type": "mysql",
         "url": "mysql://root:123456@127.0.0.1:3306/my_db",
-        "table": "sys_iot_device_sl",
-        "key_columns": [
-          "id"
-        ],
+        "table": "user_w",
+        "key_columns": ["id"],
         "max_connections": 10,
         "acquire_timeout_secs": 30,
         "use_transaction": true
@@ -39,15 +35,13 @@
   },
   "column_mapping": {
     "id": "id",
-    "device_name": "device_name",
-    "device_sn": "device_sn",
-    "metadata": "metadata"
+    "userAccount": "userAccount",
+    "userPassword": "userPassword"
   },
   "column_types": {
-    "id": "string",
-    "device_name": "string",
-    "device_sn": "string",
-    "metadata": "string"
+    "id": "int",
+    "userAccount": "string",
+    "userPassword": "string"
   },
   "mode": "insert",
   "batch_size": 5000,

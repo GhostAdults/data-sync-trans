@@ -1,26 +1,24 @@
 //! 数据同步管道执行器
 //!
-//! Reader → Channel → Writer 1:1 配对架构
+//! Reader → Channel → Writer 1:1
 //!
-//! - 一个 Job 被 Reader split 为 N 个 Task
+//! - 一个 Job 被 Reader split 为 N 个 ReadTask
 //! - Writer 以相同数量 N split，形成 N 个 1:1 Pair
-//! - 每个 Pair 拥有独立 mpsc channel，天然反压、无竞争
-//! - Reader 任务先启动，Writer 任务后启动
-//! - 任一任务失败时快速传播，其他任务尽快终止
-
+//! - 通过 TaskGroup + TaskExecutor 控制并发
 use anyhow::Result;
 use data_trans_common::constant::pipeline::{
-    DEFAULT_BATCH_SIZE, DEFAULT_BUFFER_SIZE, DEFAULT_READER_THREADS,
+    DEFAULT_BATCH_SIZE, DEFAULT_BUFFER_SIZE, DEFAULT_CHANNEL_NUMBER, DEFAULT_PER_GROUP_CHANNEL,
+    DEFAULT_READER_THREADS,
 };
-use data_trans_common::interface::{ReaderJob, WriterJob};
+use data_trans_common::interface::{ReadTask, ReaderJob, WriteTask, WriterJob};
 use data_trans_common::pipeline::PipelineMessage;
-use futures::future::BoxFuture;
 use futures::stream::FuturesUnordered;
-use futures::{FutureExt, StreamExt}; // for .boxed() .next()
+use futures::StreamExt;
 use serde::{Deserialize, Serialize};
+use std::collections::VecDeque;
 use std::sync::Arc;
 use std::time::Instant;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, Notify};
 use tracing::{error, info, warn};
 
 use super::progress::create_progress_bars;
@@ -29,9 +27,18 @@ use super::progress::create_progress_bars;
 // 配置
 // ==========================================
 
-enum TaskResult {
-    Reader(usize, Result<usize, anyhow::Error>),
-    Writer(usize, Result<usize, anyhow::Error>),
+struct PairResult {
+    pair_id: usize,
+    read_count: usize,
+    write_count: usize,
+    error: Option<anyhow::Error>,
+}
+
+struct GroupResult {
+    group_id: usize,
+    total_read: usize,
+    total_written: usize,
+    error: Option<anyhow::Error>,
 }
 
 /// 管道配置
@@ -41,6 +48,10 @@ pub struct PipelineConfig {
     pub reader_threads: usize,
     /// Channel 缓冲区大小
     pub buffer_size: usize,
+    /// 全局并发 channel 数
+    pub channel_number: usize,
+    /// 每个 TaskGroup 内并发 channel 数
+    pub per_group_channel: usize,
     /// 批处理大小
     pub batch_size: usize,
     /// 是否使用事务
@@ -52,6 +63,8 @@ impl Default for PipelineConfig {
         Self {
             reader_threads: DEFAULT_READER_THREADS,
             buffer_size: DEFAULT_BUFFER_SIZE,
+            channel_number: DEFAULT_CHANNEL_NUMBER,
+            per_group_channel: DEFAULT_PER_GROUP_CHANNEL,
             batch_size: DEFAULT_BATCH_SIZE,
             use_transaction: true,
         }
@@ -63,28 +76,36 @@ impl PipelineConfig {
     ///
     /// 优先级：系统配置 (default.config.json) > 常量默认值
     pub fn from_system_config(job_config: &data_trans_common::JobConfig) -> Self {
-        let (sys_reader, sys_buffer, sys_batch, sys_tx) = crate::get_config_manager()
-            .map(|mgr| {
-                let m = mgr.read();
-                (
-                    m.get("pipeline.reader_threads")
-                        .and_then(|v| v.as_i64())
-                        .map(|v| v as usize),
-                    m.get("pipeline.buffer_size")
-                        .and_then(|v| v.as_i64())
-                        .map(|v| v as usize),
-                    m.get("pipeline.batch_size")
-                        .and_then(|v| v.as_i64())
-                        .map(|v| v as usize),
-                    m.get("pipeline.use_transaction").and_then(|v| v.as_bool()),
-                )
-            })
-            .unwrap_or((None, None, None, None));
+        let (sys_reader, sys_buffer, sys_channel, sys_per_group, sys_batch, sys_tx) =
+            crate::get_config_manager()
+                .map(|mgr| {
+                    let m = mgr.read();
+                    (
+                        m.get("pipeline.reader_threads")
+                            .and_then(|v| v.as_i64())
+                            .map(|v| v as usize),
+                        m.get("pipeline.buffer_size")
+                            .and_then(|v| v.as_i64())
+                            .map(|v| v as usize),
+                        m.get("pipeline.channel_number")
+                            .and_then(|v| v.as_i64())
+                            .map(|v| v as usize),
+                        m.get("pipeline.per_group_channel")
+                            .and_then(|v| v.as_i64())
+                            .map(|v| v as usize),
+                        m.get("pipeline.batch_size")
+                            .and_then(|v| v.as_i64())
+                            .map(|v| v as usize),
+                        m.get("pipeline.use_transaction").and_then(|v| v.as_bool()),
+                    )
+                })
+                .unwrap_or((None, None, None, None, None, None));
 
         Self {
             reader_threads: sys_reader.unwrap_or(DEFAULT_READER_THREADS),
             buffer_size: sys_buffer.unwrap_or(DEFAULT_BUFFER_SIZE),
-            // batch_size代表了Reader每次读取多少条记录后发送到Channel，过大可能导致内存压力，过小可能增加通信开销
+            channel_number: sys_channel.unwrap_or(DEFAULT_CHANNEL_NUMBER),
+            per_group_channel: sys_per_group.unwrap_or(DEFAULT_PER_GROUP_CHANNEL),
             batch_size: sys_batch
                 .or(job_config.batch_size)
                 .unwrap_or(DEFAULT_BATCH_SIZE),
@@ -115,7 +136,7 @@ impl PipelineStats {
     }
 }
 
-/// 执行管道：Reader → Writer 1:1 配对
+/// 执行管道：Reader → Writer 1:1
 pub async fn run_pipeline(
     config: PipelineConfig,
     reader: Box<dyn ReaderJob>,
@@ -126,7 +147,184 @@ pub async fn run_pipeline(
     run_paired_pipeline(&config, reader, writer).await
 }
 
-/// 1:1 Pair 架构核心实现
+async fn run_task_pair(
+    pair_id: usize,
+    reader: Arc<dyn ReaderJob>,
+    writer: Arc<dyn WriterJob<PipelineMessage>>,
+    read_task: ReadTask,
+    write_task: WriteTask,
+    buffer_size: usize,
+    cancel: Arc<Notify>,
+) -> PairResult {
+    let (tx, rx) = mpsc::channel(buffer_size);
+
+    let r = Arc::clone(&reader);
+    let cancel_r = Arc::clone(&cancel);
+    let r_handle = tokio::spawn(async move {
+        tokio::select! {
+            result = r.execute_task(read_task, tx.clone()) => {
+                match &result {
+                    Ok(_) => {
+                        let _ = tx.send(PipelineMessage::ReaderFinished).await;
+                    }
+                    Err(e) => {
+                        error!("Reader-{} 失败: {}", pair_id, e);
+                        let _ = tx.send(PipelineMessage::Error(e.to_string())).await;
+                        cancel_r.notify_waiters();
+                    }
+                }
+                result
+            }
+            () = cancel_r.notified() => {
+                warn!("Reader-{} 被取消（其他任务失败）", pair_id);
+                Err(anyhow::anyhow!("Reader-{} 被取消", pair_id))
+            }
+        }
+    });
+
+    let w = Arc::clone(&writer);
+    let cancel_w = Arc::clone(&cancel);
+    let w_handle = tokio::spawn(async move {
+        tokio::select! {
+            result = w.execute_task(write_task, rx) => {
+                if let Err(ref e) = result {
+                    error!("Writer-{} 失败: {}", pair_id, e);
+                    cancel_w.notify_waiters();
+                }
+                result
+            }
+            () = cancel_w.notified() => {
+                warn!("Writer-{} 被取消（其他任务失败）", pair_id);
+                Err(anyhow::anyhow!("Writer-{} 被取消", pair_id))
+            }
+        }
+    });
+
+    let reader_result = match r_handle.await {
+        Ok(r) => r,
+        Err(e) => Err(anyhow::anyhow!("Reader-{} 任务崩溃: {}", pair_id, e)),
+    };
+
+    let writer_result = match w_handle.await {
+        Ok(r) => r,
+        Err(e) => Err(anyhow::anyhow!("Writer-{} 任务崩溃: {}", pair_id, e)),
+    };
+
+    match (reader_result, writer_result) {
+        (Ok(read_count), Ok(write_count)) => PairResult {
+            pair_id,
+            read_count,
+            write_count,
+            error: None,
+        },
+        (Err(e), Ok(_)) => PairResult {
+            pair_id,
+            read_count: 0,
+            write_count: 0,
+            error: Some(e),
+        },
+        (Ok(_), Err(e)) => PairResult {
+            pair_id,
+            read_count: 0,
+            write_count: 0,
+            error: Some(e),
+        },
+        (Err(reader_err), Err(writer_err)) => PairResult {
+            pair_id,
+            read_count: 0,
+            write_count: 0,
+            error: Some(anyhow::anyhow!(
+                "Reader/Writer 同时失败: {}; {}",
+                reader_err,
+                writer_err
+            )),
+        },
+    }
+}
+
+async fn run_task_group(
+    group_id: usize,
+    tasks: Vec<(usize, ReadTask, WriteTask)>,
+    concurrency: usize,
+    reader: Arc<dyn ReaderJob>,
+    writer: Arc<dyn WriterJob<PipelineMessage>>,
+    buffer_size: usize,
+    cancel: Arc<Notify>,
+    reader_bar: indicatif::ProgressBar,
+    writer_bar: indicatif::ProgressBar,
+) -> GroupResult {
+    let mut queue: VecDeque<(usize, ReadTask, WriteTask)> = VecDeque::from(tasks);
+    let mut running = FuturesUnordered::new();
+
+    let mut total_read = 0usize;
+    let mut total_written = 0usize;
+    let mut first_error: Option<anyhow::Error> = None;
+
+    while running.len() < concurrency {
+        if let Some((pair_id, read_task, write_task)) = queue.pop_front() {
+            running.push(run_task_pair(
+                pair_id,
+                Arc::clone(&reader),
+                Arc::clone(&writer),
+                read_task,
+                write_task,
+                buffer_size,
+                Arc::clone(&cancel),
+            ));
+        } else {
+            break;
+        }
+    }
+
+    while let Some(pair_result) = running.next().await {
+        if let Some(e) = pair_result.error {
+            error!(
+                "TaskGroup-{} 的 Pair-{} 失败: {}",
+                group_id, pair_result.pair_id, e
+            );
+            if first_error.is_none() {
+                first_error = Some(e);
+            }
+            cancel.notify_waiters();
+        } else {
+            total_read += pair_result.read_count;
+            total_written += pair_result.write_count;
+            reader_bar.inc(pair_result.read_count as u64);
+            writer_bar.inc(pair_result.write_count as u64);
+            info!(
+                "TaskGroup-{} 的 Pair-{} 完成，读取 {} 条，写入 {} 条",
+                group_id, pair_result.pair_id, pair_result.read_count, pair_result.write_count
+            );
+        }
+
+        if first_error.is_none() {
+            while running.len() < concurrency {
+                if let Some((pair_id, read_task, write_task)) = queue.pop_front() {
+                    running.push(run_task_pair(
+                        pair_id,
+                        Arc::clone(&reader),
+                        Arc::clone(&writer),
+                        read_task,
+                        write_task,
+                        buffer_size,
+                        Arc::clone(&cancel),
+                    ));
+                } else {
+                    break;
+                }
+            }
+        }
+    }
+
+    GroupResult {
+        group_id,
+        total_read,
+        total_written,
+        error: first_error,
+    }
+}
+
+/// 1:1 Pair
 async fn run_paired_pipeline(
     config: &PipelineConfig,
     reader: Arc<dyn ReaderJob>,
@@ -134,7 +332,6 @@ async fn run_paired_pipeline(
 ) -> Result<PipelineStats> {
     let start_time = Instant::now();
 
-    // 先 split Reader，得到 Task 数量
     let reader_split = reader.split(config.reader_threads).await?;
     let task_count = reader_split.tasks.len();
     info!(
@@ -146,17 +343,17 @@ async fn run_paired_pipeline(
         info!("无读取任务，Pipeline 结束");
         return Ok(PipelineStats::default());
     }
-    // 进度条
-    let progress_ctx = create_progress_bars(reader_split.total_records);
 
-    // 以 Reader Task 数量 split Writer，保证 1:1
+    let progress_ctx = create_progress_bars(reader_split.total_records);
+    let reader_bar = progress_ctx.reader_bar.clone();
+    let writer_bar = progress_ctx.writer_bar.clone();
+
     let writer_split = writer.split(task_count).await?;
     info!(
         "Writer: 切分为 {} 个任务（与 Reader 1:1 配对）",
         writer_split.tasks.len()
     );
 
-    // 配对不足直接报错，避免静默丢数据
     if writer_split.tasks.len() < task_count {
         return Err(anyhow::anyhow!(
             "Writer 只产出 {} 个任务，但有 {} 个 Reader 任务，无法完全配对",
@@ -165,133 +362,89 @@ async fn run_paired_pipeline(
         ));
     }
 
-    // 快速失败：通过 cancel 信号通知所有任务终止
-    let cancel = Arc::new(tokio::sync::Notify::new());
+    let need_channel = config.channel_number.max(1).min(task_count);
+    let per_group_channel = config.per_group_channel.max(1);
+    let group_count = need_channel.div_ceil(per_group_channel);
 
-    // 为每对创建独立 channel + spawn 任务
-    let mut pair_handles = Vec::with_capacity(task_count);
+    let mut grouped_tasks: Vec<Vec<(usize, ReadTask, WriteTask)>> = vec![Vec::new(); group_count];
     for i in 0..task_count {
-        let (tx, rx) = mpsc::channel(config.buffer_size);
-
-        // spawn Reader
-        let r = Arc::clone(&reader);
-        let read_task = reader_split.tasks[i].clone();
-        let cancel_r = Arc::clone(&cancel);
-        let r_handle = tokio::spawn(async move {
-            // 检查是否已被取消
-            tokio::select! {
-                result = r.execute_task(read_task, tx.clone()) => {
-                    match &result {
-                        Ok(_) => {
-                            let _ = tx.send(PipelineMessage::ReaderFinished).await;
-                        }
-                        Err(e) => {
-                            error!("Reader-{} 失败: {}", i, e);
-                            let _ = tx.send(PipelineMessage::Error(e.to_string())).await;
-                            // 通知其他 Pair 终止
-                            cancel_r.notify_waiters();
-                        }
-                    }
-                    result
-                }
-                () = cancel_r.notified() => {
-                    warn!("Reader-{} 被取消（其他任务失败）", i);
-                    Err(anyhow::anyhow!("Reader-{} 被取消", i))
-                }
-            }
-        });
-
-        // spawn Writer
-        let w = Arc::clone(&writer);
-        let write_task = writer_split.tasks[i].clone();
-        let cancel_w = Arc::clone(&cancel);
-        let w_handle = tokio::spawn(async move {
-            tokio::select! {
-                result = w.execute_task(write_task, rx) => {
-                    if let Err(ref e) = result {
-                        error!("Writer-{} 失败: {}", i, e);
-                        // Writer 失败也要通知其他 Pair 终止
-                        cancel_w.notify_waiters();
-                    }
-                   result
-                }
-                () = cancel_w.notified() => {
-                    warn!("Writer-{} 被取消（其他任务失败）", i);
-                    Err(anyhow::anyhow!("Writer-{} 被取消", i))
-                }
-            }
-        });
-
-        pair_handles.push((r_handle, w_handle));
+        let group_id = i % group_count;
+        grouped_tasks[group_id].push((
+            i,
+            reader_split.tasks[i].clone(),
+            writer_split.tasks[i].clone(),
+        ));
     }
 
-    let mut tasks: FuturesUnordered<BoxFuture<'static, TaskResult>> = FuturesUnordered::new();
-    for (i, (r_handle, w_handle)) in pair_handles.into_iter().enumerate() {
-        // reader
-        tasks.push(
-            async move {
-                let res = r_handle.await;
-                TaskResult::Reader(
-                    i,
-                    match res {
-                        Ok(r) => r,
-                        Err(e) => Err(anyhow::anyhow!("Reader-{} 任务崩溃: {}", i, e)),
-                    },
-                )
-            }
-            .boxed(),
+    let base_group_concurrency = need_channel / group_count;
+    let extra_group_concurrency = need_channel % group_count;
+
+    info!(
+        "Pipeline 调度: task_count={}, need_channel={}, group_count={}, per_group_channel={}",
+        task_count, need_channel, group_count, per_group_channel
+    );
+
+    let cancel = Arc::new(Notify::new());
+    let mut group_handles = FuturesUnordered::new();
+
+    for (group_id, tasks) in grouped_tasks.into_iter().enumerate() {
+        if tasks.is_empty() {
+            continue;
+        }
+
+        let group_concurrency =
+            base_group_concurrency + usize::from(group_id < extra_group_concurrency);
+
+        info!(
+            "TaskGroup-{} 启动: tasks={}, concurrency={}",
+            group_id,
+            tasks.len(),
+            group_concurrency
         );
-        // writer
-        tasks.push(
-            async move {
-                let res = w_handle.await;
-                TaskResult::Writer(
-                    i,
-                    match res {
-                        Ok(r) => r,
-                        Err(e) => Err(anyhow::anyhow!("Writer-{} 任务崩溃: {}", i, e)),
-                    },
-                )
-            }
-            .boxed(),
+
+        let group_future = run_task_group(
+            group_id,
+            tasks,
+            group_concurrency.max(1),
+            Arc::clone(&reader),
+            Arc::clone(&writer),
+            config.buffer_size,
+            Arc::clone(&cancel),
+            reader_bar.clone(),
+            writer_bar.clone(),
         );
+
+        group_handles.push(tokio::spawn(group_future));
     }
 
-    // 等待所有 Pair 完成
-    let mut total_read = 0;
-    let mut total_written = 0;
-    let mut any_failed = false;
+    let mut total_read = 0usize;
+    let mut total_written = 0usize;
     let mut first_error: Option<anyhow::Error> = None;
-    while let Some(result) = tasks.next().await {
-        match result {
-            TaskResult::Reader(i, Ok(count)) => {
-                total_read += count;
-                progress_ctx.reader_bar.inc(count as u64);
-                info!("Reader-{} 完成，读取 {} 条", i, count);
-            }
-            TaskResult::Reader(i, Err(e)) => {
-                error!("Reader-{} 失败: {}", i, e);
-                any_failed = true;
-                if first_error.is_none() {
-                    first_error = Some(e);
+
+    while let Some(group_result) = group_handles.next().await {
+        match group_result {
+            Ok(result) => {
+                total_read += result.total_read;
+                total_written += result.total_written;
+                info!(
+                    "TaskGroup-{} 结束: read={}, write={}",
+                    result.group_id, result.total_read, result.total_written
+                );
+                if let Some(e) = result.error {
+                    if first_error.is_none() {
+                        first_error = Some(e);
+                    }
                 }
             }
-            TaskResult::Writer(i, Ok(count)) => {
-                total_written += count;
-                progress_ctx.writer_bar.inc(count as u64);
-                info!("Writer-{} 完成，写入 {} 条", i, count);
-            }
-            TaskResult::Writer(i, Err(e)) => {
-                error!("Writer-{} 失败: {}", i, e);
-                any_failed = true;
+            Err(e) => {
+                error!("TaskGroup 任务崩溃: {}", e);
                 if first_error.is_none() {
-                    first_error = Some(e);
+                    first_error = Some(anyhow::anyhow!("TaskGroup 任务崩溃: {}", e));
                 }
             }
         }
     }
 
-    // 6. 汇总统计
     let elapsed = start_time.elapsed();
     let mut stats = PipelineStats {
         records_read: total_read,
@@ -304,8 +457,8 @@ async fn run_paired_pipeline(
 
     progress_ctx.finish();
 
-    if any_failed {
-        return Err(first_error.unwrap_or_else(|| anyhow::anyhow!("Pipeline 执行存在失败任务")));
+    if let Some(e) = first_error {
+        return Err(e);
     }
 
     Ok(stats)

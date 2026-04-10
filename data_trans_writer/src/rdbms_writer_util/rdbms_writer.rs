@@ -129,24 +129,14 @@ impl RowWriter<PipelineMessage> for PipelineRowWriter {
         msg: &PipelineMessage,
         pool: &Arc<DbPool>,
         config: &RdbmsConfig,
-        db_kind: DbKind,
+        _db_kind: DbKind,
         task: &WriteTask,
     ) -> Result<usize> {
         match msg {
             PipelineMessage::DataBatch(rows) => {
-                if rows.is_empty() {
-                    return Ok(0);
-                }
-
-                let batch = prepare_db_batch(
-                    rows,
-                    &config.table,
-                    &config.key_columns,
-                    config.mode,
-                    db_kind,
-                )?;
-
-                execute_db_write(&batch, pool, task.batch_size).await
+                let executor =
+                    RdbmsWriterExecutor::new(Arc::clone(pool), config.clone(), task.batch_size);
+                executor.write_batch(rows).await
             }
             PipelineMessage::ReaderFinished => {
                 info!("Writer-{} 收到 Reader 完成信号", task.task_id);

@@ -154,14 +154,28 @@ pub trait DbExecutor: Send + Sync {
     /// 执行带参数的 SQL
     async fn execute_with_params(&self, sql: &str, params: &[TypedVal]) -> Result<u64>;
 
-    /// 批量执行参数化 SQL（多行 VALUES 合并）
+    /// 批量执行参数化 SQL
     async fn execute_batch(&self, base_sql: &str, rows: &[Vec<TypedVal>]) -> Result<u64> {
-        let mut count = 0u64;
-        for row in rows {
-            self.execute_with_params(base_sql, row).await?;
-            count += 1;
+        if rows.is_empty() {
+            return Ok(0);
         }
-        Ok(count)
+        let mut sql = base_sql.to_string();
+        sql.push_str(" VALUES ");
+        for (i, row) in rows.iter().enumerate() {
+            if i > 0 {
+                sql.push_str(", ");
+            }
+            sql.push('(');
+            for j in 0..row.len() {
+                if j > 0 {
+                    sql.push_str(", ");
+                }
+                // 默认使用 ? 占位符（MySQL），具体实现可重写
+                sql.push('?');
+            }
+            sql.push(')');
+        }
+        self.execute(&sql).await
     }
 }
 

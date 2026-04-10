@@ -8,7 +8,8 @@
 
 use anyhow::Result;
 use data_trans_common::constant::pipeline::{
-    DEFAULT_BATCH_SIZE, DEFAULT_BUFFER_SIZE, DEFAULT_READER_THREADS,
+    DEFAULT_BATCH_SIZE, DEFAULT_BUFFER_SIZE, DEFAULT_CHANNEL_NUMBER, DEFAULT_PER_GROUP_CHANNEL,
+    DEFAULT_READER_THREADS,
 };
 use data_trans_common::interface::{ReaderJob, WriterJob};
 use data_trans_common::job_config::JobConfig;
@@ -29,6 +30,8 @@ use super::registry::GlobalRegistry;
 pub struct RunnerConfig {
     pub buffer_size: usize,
     pub reader_threads: usize,
+    pub channel_number: usize,
+    pub per_group_channel: usize,
     pub batch_size: usize,
     pub use_transaction: bool,
 }
@@ -38,6 +41,8 @@ impl Default for RunnerConfig {
         Self {
             buffer_size: DEFAULT_BUFFER_SIZE,
             reader_threads: DEFAULT_READER_THREADS,
+            channel_number: DEFAULT_CHANNEL_NUMBER,
+            per_group_channel: DEFAULT_PER_GROUP_CHANNEL,
             batch_size: DEFAULT_BATCH_SIZE,
             use_transaction: true,
         }
@@ -50,6 +55,8 @@ impl RunnerConfig {
         Self {
             buffer_size: pipeline_config.buffer_size,
             reader_threads: pipeline_config.reader_threads,
+            channel_number: pipeline_config.channel_number,
+            per_group_channel: pipeline_config.per_group_channel,
             batch_size: pipeline_config.batch_size,
             use_transaction: pipeline_config.use_transaction,
         }
@@ -59,6 +66,8 @@ impl RunnerConfig {
         PipelineConfig {
             reader_threads: self.reader_threads,
             buffer_size: self.buffer_size,
+            channel_number: self.channel_number,
+            per_group_channel: self.per_group_channel,
             batch_size: self.batch_size,
             use_transaction: self.use_transaction,
         }
