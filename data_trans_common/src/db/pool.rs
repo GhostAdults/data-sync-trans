@@ -73,7 +73,7 @@ pub async fn get_db_pool(
     max_conns: u32,
     timeout_secs: Option<u64>,
 ) -> Result<DbPool> {
-    let pools = DB_POOLS.get_or_init(|| DashMap::new());
+    let pools: &DashMap<PoolConfig, DbPool> = DB_POOLS.get_or_init(|| DashMap::new());
     let key = PoolConfig {
         kind,
         url: url.to_string(),

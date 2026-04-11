@@ -751,6 +751,7 @@ dependencies = [
  "sqlx",
  "tempfile",
  "tokio",
+ "tokio-util",
  "toml 0.8.2",
  "tracing",
  "uuid",

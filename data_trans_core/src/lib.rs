@@ -14,6 +14,17 @@ use parking_lot::RwLock;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+fn load_embedded_defaults() -> serde_json::Value {
+    let defaults_content = include_str!("../../data_trans_cli/user_config/default.config.json");
+    match serde_json::from_str(defaults_content) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("Failed to parse embedded defaults: {}", e);
+            serde_json::json!({})
+        }
+    }
+}
+
 pub fn init_system_config() -> Option<Arc<RwLock<ConfigManager>>> {
     let mgr_arc = CONFIG_MANAGER.get_or_init(|| {
         //  创建 ConfigManager (OS 路径)
@@ -26,14 +37,31 @@ pub fn init_system_config() -> Option<Arc<RwLock<ConfigManager>>> {
             }
         };
 
-        //  读取 defaults.config.json
-        let defaults_content = include_str!("../../data_trans_cli/user_config/default.config.json");
-        let defaults_json: serde_json::Value = match serde_json::from_str(defaults_content) {
-            Ok(v) => v,
-            Err(e) => {
-                eprintln!("Failed to parse defaults.json: {}", e);
-                serde_json::json!({})
+        // 优先读取用户目录下的 .config.json，不存在时 fallback 到内嵌默认值
+        let user_config_dir = data_trans_common::app_config::path::default_config_path("app_trans")
+            .parent()
+            .map(|p| p.join(".config.json"))
+            .unwrap_or_default();
+
+        let defaults_json = if user_config_dir.exists() {
+            match std::fs::read_to_string(&user_config_dir) {
+                Ok(content) => match serde_json::from_str(&content) {
+                    Ok(v) => {
+                        eprintln!("使用用户配置: {}", user_config_dir.display());
+                        v
+                    }
+                    Err(e) => {
+                        eprintln!("用户配置解析失败({}), 使用内嵌默认值", e);
+                        load_embedded_defaults()
+                    }
+                },
+                Err(e) => {
+                    eprintln!("用户配置读取失败({}), 使用内嵌默认值", e);
+                    load_embedded_defaults()
+                }
             }
+        } else {
+            load_embedded_defaults()
         };
 
         // 调用 apply_json_defaults

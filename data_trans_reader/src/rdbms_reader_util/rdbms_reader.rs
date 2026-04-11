@@ -107,6 +107,7 @@ impl ReaderJob for RdbmsJob {
         tx: mpsc::Sender<PipelineMessage>,
     ) -> Result<usize> {
         let sent: usize = self.read_data(&task, &tx).await?;
+        info!("Reader-{} 已发送 {} 条", task.task_id, sent);
         Ok(sent)
     }
 
@@ -161,10 +162,6 @@ impl ReaderTask for RdbmsJob {
             if buffer.len() >= batch_size {
                 sent += self.send_batch(&buffer, tx).await?;
                 buffer.clear();
-
-                if sent % 1000 == 0 {
-                    info!("Reader-{} 已发送 {} 条", slice_task.task_id, sent);
-                }
             }
         }
 

@@ -106,8 +106,9 @@ impl PipelineConfig {
             buffer_size: sys_buffer.unwrap_or(DEFAULT_BUFFER_SIZE),
             channel_number: sys_channel.unwrap_or(DEFAULT_CHANNEL_NUMBER),
             per_group_channel: sys_per_group.unwrap_or(DEFAULT_PER_GROUP_CHANNEL),
-            batch_size: sys_batch
-                .or(job_config.batch_size)
+            batch_size: job_config
+                .batch_size
+                .or(sys_batch)
                 .unwrap_or(DEFAULT_BATCH_SIZE),
             use_transaction: sys_tx.unwrap_or(true),
         }
@@ -176,8 +177,8 @@ async fn run_task_pair(
                 result
             }
             () = cancel_r.notified() => {
-                warn!("Reader-{} 被取消（其他任务失败）", pair_id);
-                Err(anyhow::anyhow!("Reader-{} 被取消", pair_id))
+                warn!("Reader-{} 被终止（其他任务失败）", pair_id);
+                Err(anyhow::anyhow!("Reader-{} 被终止", pair_id))
             }
         }
     });
@@ -194,8 +195,8 @@ async fn run_task_pair(
                 result
             }
             () = cancel_w.notified() => {
-                warn!("Writer-{} 被取消（其他任务失败）", pair_id);
-                Err(anyhow::anyhow!("Writer-{} 被取消", pair_id))
+                warn!("Writer-{} 被终止（其他任务失败）", pair_id);
+                Err(anyhow::anyhow!("Writer-{} 被终止", pair_id))
             }
         }
     });
@@ -335,12 +336,14 @@ async fn run_paired_pipeline(
     let reader_split = reader.split(config.reader_threads).await?;
     let task_count = reader_split.tasks.len();
     info!(
-        "Reader: 总记录数 {}, 切分为 {} 个任务",
-        reader_split.total_records, task_count
+        "[{}] 总记录数 {}, 切分为 {} 个任务",
+        reader.description(),
+        reader_split.total_records,
+        task_count
     );
 
     if task_count == 0 {
-        info!("无读取任务，Pipeline 结束");
+        info!("[{}] 无读取任务，Pipeline 关闭", reader.description());
         return Ok(PipelineStats::default());
     }
 
@@ -350,13 +353,14 @@ async fn run_paired_pipeline(
 
     let writer_split = writer.split(task_count).await?;
     info!(
-        "Writer: 切分为 {} 个任务（与 Reader 1:1 配对）",
+        "[{}] 切分为 {} 个任务（R1:W1）",
+        writer.description(),
         writer_split.tasks.len()
     );
 
     if writer_split.tasks.len() < task_count {
         return Err(anyhow::anyhow!(
-            "Writer 只产出 {} 个任务，但有 {} 个 Reader 任务，无法完全配对",
+            "Writer 只产出 {} 个任务，但有 {} 个 Reader 任务.",
             writer_split.tasks.len(),
             task_count
         ));
@@ -380,7 +384,7 @@ async fn run_paired_pipeline(
     let extra_group_concurrency = need_channel % group_count;
 
     info!(
-        "Pipeline 调度: task_count={}, need_channel={}, group_count={}, per_group_channel={}",
+        "Pipeline 准备配置: task_count={}, need_channel={}, group_count={}, per_group_channel={}",
         task_count, need_channel, group_count, per_group_channel
     );
 
@@ -405,7 +409,7 @@ async fn run_paired_pipeline(
         let group_future = run_task_group(
             group_id,
             tasks,
-            group_concurrency.max(1),
+            group_concurrency,
             Arc::clone(&reader),
             Arc::clone(&writer),
             config.buffer_size,

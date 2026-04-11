@@ -150,7 +150,6 @@ impl Runner {
     ) -> Result<RunResult> {
         let start_time = Instant::now();
         let pipeline_config = self.config.to_pipeline_config();
-
         let pipeline_stats = run_pipeline(pipeline_config, reader, writer).await?;
         let elapsed = start_time.elapsed();
         let mut stats = RunnerStats::from_pipeline(pipeline_stats);

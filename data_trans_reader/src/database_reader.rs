@@ -43,8 +43,15 @@ impl DatabaseJob {
         let columns = input_config
             .get("columns")
             .and_then(|v| v.as_str())
-            .unwrap_or("*")
-            .to_string();
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| {
+                self.original_config
+                    .column_mapping
+                    .keys()
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            });
         let split_factor = input_config
             .get("split_factor")
             .and_then(|v| v.as_u64().map(|n| n as usize));

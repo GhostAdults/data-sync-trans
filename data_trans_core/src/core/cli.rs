@@ -3,7 +3,6 @@
 
 use crate::core::serve::*;
 use crate::run_serve;
-use axum::http::request::Builder;
 use clap::{Parser, Subcommand};
 use data_trans_common::db::{detect_db_kind, DbKind};
 use data_trans_common::{ApiConfig, JobConfig};
@@ -101,7 +100,7 @@ pub fn run_cli(cmd: Commands) {
                     match sync_cli(cfg).await {
                         Ok(result) => {
                             println!(
-                                "完成: 读取 {} 条, 写入 {} 条, 耗时 {:.2}s, 吞吐 {:.0} 条/秒",
+                                "complete:\n 任务读出 {} records\n 任务写入 {} records\n 耗时 {:.2}s\n TP {:.0} rec/s",
                                 result.stats.records_read,
                                 result.stats.records_written,
                                 result.stats.elapsed_secs,

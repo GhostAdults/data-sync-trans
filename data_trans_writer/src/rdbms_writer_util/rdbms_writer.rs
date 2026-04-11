@@ -176,7 +176,6 @@ pub fn prepare_db_batch(
         }
         rows.push(values);
     }
-
     Ok(DbBatch {
         base_sql,
         table_name: table_name.to_string(),
@@ -212,22 +211,29 @@ pub fn build_base_sql(
 ) -> Result<String> {
     let mut sql = String::new();
 
+    let quoted_columns: Vec<String> = match kind {
+        DbKind::Postgres => columns.iter().map(|c| format!("\"{}\"", c)).collect(),
+        DbKind::Mysql => columns.to_vec(),
+    };
+
     sql.push_str("INSERT INTO ");
     sql.push_str(table);
     sql.push_str(" (");
-    sql.push_str(&columns.join(", "));
+    sql.push_str(&quoted_columns.join(", "));
     sql.push(')');
 
     if mode == WriteMode::Upsert {
         match kind {
             DbKind::Postgres => {
                 if !keys.is_empty() {
+                    let quoted_keys: Vec<String> =
+                        keys.iter().map(|c| format!("\"{}\"", c)).collect();
                     sql.push_str(" ON CONFLICT (");
-                    sql.push_str(&keys.join(", "));
+                    sql.push_str(&quoted_keys.join(", "));
                     sql.push_str(") DO UPDATE SET ");
                     let sets: Vec<String> = nonkeys
                         .iter()
-                        .map(|c| format!("{} = EXCLUDED.{}", c, c))
+                        .map(|c| format!("\"{}\" = EXCLUDED.\"{}\"", c, c))
                         .collect();
                     sql.push_str(&sets.join(", "));
                 } else {
@@ -261,7 +267,6 @@ pub async fn execute_db_write(
 
     let executor = pool.executor();
     let mut processed = 0usize;
-
     // 这里写入会按照 batch_size 分批执行，避免一次性写入过多数据导致数据库压力过大
     for chunk in batch.rows.chunks(batch_size) {
         executor.execute_batch(&batch.base_sql, chunk).await?;

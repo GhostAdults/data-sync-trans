@@ -7,8 +7,8 @@
       "split_pk": "id",
       "connections": [
         {
-          "db_type": "mysql",
-          "url": "mysql://root:123456@127.0.0.1:3306/my_db",
+          "db_type": "postgres",
+          "url": "postgres://postgres:123456@127.0.0.1:5432/postgres",
           "table": "user_x",
           "key_columns": ["id"],
           "max_connections": 20,
@@ -23,8 +23,8 @@
     "type": "database",
     "config": {
       "connection": {
-        "db_type": "mysql",
-        "url": "mysql://root:123456@127.0.0.1:3306/my_db",
+        "db_type": "postgres",
+        "url": "postgres://postgres:123456@127.0.0.1:5432/postgres",
         "table": "user_w",
         "key_columns": ["id"],
         "max_connections": 20,
@@ -34,12 +34,10 @@
     }
   },
   "column_mapping": {
-    "id": "id",
     "userAccount": "userAccount",
     "userPassword": "userPassword"
   },
   "column_types": {
-    "id": "int",
     "userAccount": "string",
     "userPassword": "string"
   },

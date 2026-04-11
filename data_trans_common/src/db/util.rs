@@ -92,6 +92,23 @@ pub fn build_select_query(columns: &str, table: &str) -> String {
     format!("SELECT {} FROM {}", columns, table)
 }
 
+/// PostgreSQL 列名加双引号，防止保留字冲突
+pub fn quote_pg_columns(columns: &str) -> String {
+    columns
+        .split(',')
+        .map(|c| format!("\"{}\"", c.trim()))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+pub fn build_select_query_for(columns: &str, table: &str, db_kind: DbKind) -> String {
+    let cols = match db_kind {
+        DbKind::Postgres => quote_pg_columns(columns),
+        DbKind::Mysql => columns.to_string(),
+    };
+    format!("SELECT {} FROM {}", cols, table)
+}
+
 /// Convert option string to DbKind
 pub fn dbkind_from_opt_str(s: &Option<String>) -> Option<DbKind> {
     s.as_ref().and_then(|v| {

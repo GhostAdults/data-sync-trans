@@ -11,7 +11,7 @@ pub mod schema {
 pub mod key {
     /// 主键列默认名称
     pub const DEFAULT_KEY_COLUMN: &str = "id";
-    pub const SPLIT_FACTOR: usize = 5;
+    pub const SPLIT_FACTOR: usize = 3;
 }
 
 pub mod db {
