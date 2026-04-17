@@ -1,8 +1,10 @@
 pub mod api_reader;
+pub mod binlog_reader;
 pub mod database_reader;
 pub mod rdbms_reader_util;
 
 pub use api_reader::{ApiJob, ApiReader};
+pub use binlog_reader::{BinlogConfig, BinlogReader, CdcOp};
 pub use database_reader::{DatabaseJob, DatabaseReader};
 pub use rdbms_reader_util::rdbms_reader::{
     count_total_records, execute_query_stream, DbRowStream, RdbmsConfig, RdbmsReader,
@@ -23,6 +25,19 @@ use std::sync::{Arc, OnceLock, RwLock};
 /// Reader 返回的原始数据流
 pub type JsonStream = Pin<Box<dyn Stream<Item = Result<JsonValue>> + Send + 'static>>;
 
+/// Stream 模式：Finite(全量，有终点) / Infinite(CDC，永不结束)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StreamMode {
+    Finite,
+    Infinite,
+}
+
+impl Default for StreamMode {
+    fn default() -> Self {
+        StreamMode::Finite
+    }
+}
+
 /// 一个 reader job 分裂成多个 reader task
 #[derive(Debug, Clone)]
 pub struct ReadTask {
@@ -37,6 +52,8 @@ pub struct ReadTask {
 pub struct SplitReaderResult {
     pub total_records: usize,
     pub tasks: Vec<ReadTask>,
+    /// 声明 stream 模式：Finite(全量) / Infinite(CDC)
+    pub stream_mode: StreamMode,
 }
 
 /// Reader Job trait
@@ -50,6 +67,8 @@ pub trait ReaderJob: Send + Sync {
 #[async_trait::async_trait]
 pub trait ReaderTask: Send + Sync {
     async fn read_data(&self, task: &ReadTask) -> Result<JsonStream>;
+
+    fn shutdown(&self) {}
 }
 
 /// Reader = ReaderJob + ReaderTask
@@ -139,6 +158,16 @@ inventory::submit! {
         source_type: "database",
         create: |config| {
             let reader = DatabaseReader::init(config)?;
+            Ok(Box::new(reader))
+        },
+    }
+}
+
+inventory::submit! {
+    ReaderPlugin {
+        source_type: "mysql_binlog",
+        create: |config| {
+            let reader = BinlogReader::init(config)?;
             Ok(Box::new(reader))
         },
     }

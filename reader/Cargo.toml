@@ -27,3 +27,5 @@ reqwest = { version = "0.12", features = ["json"] }
 chrono = { workspace = true }
 rust_decimal = { workspace = true }
 inventory = { workspace = true }
+mysql_cdc = { workspace = true }
+redb = "2"

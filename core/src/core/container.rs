@@ -15,10 +15,10 @@ use relus_common::constant::pipeline::{
     DEFAULT_BATCH_SIZE, DEFAULT_BUFFER_SIZE, DEFAULT_CHANNEL_NUMBER, DEFAULT_PER_GROUP_CHANNEL,
     DEFAULT_READER_THREADS,
 };
-use relus_reader::{ReadTask, Reader};
-use relus_writer::{WriteTask, Writer};
 use relus_common::pipeline::PipelineMessage;
 use relus_common::types::SourceType;
+use relus_reader::{ReadTask, Reader, StreamMode};
+use relus_writer::{WriteTask, Writer};
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 use std::sync::Arc;
@@ -218,6 +218,7 @@ async fn run_task_pair(
     batch_size: usize,
     record_builder: Arc<RecordBuilder>,
     cancel: Arc<Notify>,
+    stream_mode: StreamMode,
 ) -> PairResult {
     let (tx, rx) = mpsc::channel(buffer_size);
 
@@ -227,20 +228,43 @@ async fn run_task_pair(
     let r_handle = tokio::spawn(async move {
         tokio::select! {
             result = csas(pair_id, r, &read_task, batch_size, &builder, &tx) => {
-                if result.is_ok() {
-                    let _ = tx.send(PipelineMessage::ReaderFinished).await;
-                } else {
-                    if let Err(ref e) = result {
-                        error!("Reader-{} 失败: {}", pair_id, e);
-                        let _ = tx.send(PipelineMessage::Error(e.to_string())).await;
+                match stream_mode {
+                    StreamMode::Finite => {
+                        if result.is_ok() {
+                            let _ = tx.send(PipelineMessage::ReaderFinished).await;
+                        } else if let Err(ref e) = result {
+                            error!("Reader-{} 失败: {}", pair_id, e);
+                            let _ = tx.send(PipelineMessage::Error(e.to_string())).await;
+                            cancel_r.notify_waiters();
+                        }
                     }
-                    cancel_r.notify_waiters();
+                    StreamMode::Infinite => {
+                        if let Err(ref e) = result {
+                            error!("Reader-{} 流错误: {}", pair_id, e);
+                            let _ = tx.send(PipelineMessage::Error(e.to_string())).await;
+                            cancel_r.notify_waiters();
+                        }
+                    }
                 }
                 result.map(|count| count)
             }
             () = cancel_r.notified() => {
                 warn!("Reader-{} 被终止（其他任务失败）", pair_id);
                 Err(anyhow::anyhow!("Reader-{} 被终止", pair_id))
+            }
+            // os windows ctrl+c 信号
+            () = async {
+                if matches!(stream_mode, StreamMode::Infinite) {
+                    let _ = tokio::signal::ctrl_c().await;
+                } else {
+                    std::future::pending::<()>().await;
+                }
+            } => {
+                println!("[Pipeline] Stoping...");
+                info!("[Pipeline] Exit with: Ctrl+C signal，开始关闭");
+                reader.shutdown(); // close reader stream
+                cancel_r.notify_waiters();
+                Err(anyhow::anyhow!("Reader-{} 进程被终止", pair_id))
             }
         }
     });
@@ -317,6 +341,7 @@ async fn run_task_group(
     cancel: Arc<Notify>,
     reader_bar: indicatif::ProgressBar,
     writer_bar: indicatif::ProgressBar,
+    stream_mode: StreamMode,
 ) -> GroupResult {
     let mut queue: VecDeque<(usize, ReadTask, WriteTask)> = VecDeque::from(tasks);
     let mut running = FuturesUnordered::new();
@@ -337,6 +362,7 @@ async fn run_task_group(
                 batch_size,
                 Arc::clone(&record_builder),
                 Arc::clone(&cancel),
+                stream_mode,
             ));
         } else {
             break;
@@ -377,6 +403,7 @@ async fn run_task_group(
                         batch_size,
                         Arc::clone(&record_builder),
                         Arc::clone(&cancel),
+                        stream_mode,
                     ));
                 } else {
                     break;
@@ -404,6 +431,7 @@ async fn run_paired_pipeline(
 
     let reader_split = reader.split(config.reader_threads).await?;
     let task_count = reader_split.tasks.len();
+    let stream_mode = reader_split.stream_mode;
     info!(
         "[{}] 总记录数 {}, 切分为 {} 个任务",
         reader.description(),
@@ -487,6 +515,7 @@ async fn run_paired_pipeline(
             Arc::clone(&cancel),
             reader_bar.clone(),
             writer_bar.clone(),
+            stream_mode,
         );
 
         group_handles.push(tokio::spawn(group_future));

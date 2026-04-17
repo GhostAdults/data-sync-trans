@@ -15,7 +15,10 @@
       "Bash(openspec list:*)",
       "Bash(openspec status:*)",
       "Bash(python -c \"import sys,json; d=json.load\\(sys.stdin\\); print\\(json.dumps\\({'total':d['progress']['total'],'complete':d['progress']['complete'],'tasks':[t for t in d['tasks'] if not t['done']]},indent=2\\)\\)\")",
-      "Bash(openspec archive:*)"
+      "Bash(openspec archive:*)",
+      "WebSearch",
+      "Bash(mv openspec/changes/binlog-column-name-mapping openspec/changes/archive/2026-04-17-binlog-column-name-mapping)",
+      "Bash(mv openspec/changes/unified-stream-pipeline openspec/changes/archive/2026-04-17-unified-stream-pipeline)"
     ]
   }
 }

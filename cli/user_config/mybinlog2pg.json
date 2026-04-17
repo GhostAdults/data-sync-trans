@@ -1,0 +1,47 @@
+{
+  "id": "binlog_sync",
+  "input": {
+    "name": "binlog_source",
+    "type": "mysql_binlog",
+    "config": {
+      "connection": {
+        "url": "mysql://root:123456@127.0.0.1:3306/my_db",
+        "username": "root",
+        "password": "123456",
+        "server_id": 1,
+        "table": "user_x",
+        "table_filter": "my_db.user_x"
+      }
+    }
+  },
+  "output": {
+    "name": "db_target",
+    "type": "database",
+    "config": {
+      "connection": {
+        "db_type": "postgres",
+        "url": "postgres://postgres:123456@127.0.0.1:5432/postgres",
+        "table": "user_w",
+        "key_columns": [
+          "id"
+        ],
+        "max_connections": 20,
+        "acquire_timeout_secs": 30,
+        "use_transaction": true
+      }
+    }
+  },
+  "column_mapping": {
+    "id": "id",
+    "userAccount": "expr: 'IMPORTED'",
+    "userPassword": "userPassword"
+  },
+  "column_types": {
+    "id": "int",
+    "userAccount": "string",
+    "userPassword": "string"
+  },
+  "mode": "insert",
+  "batch_size": 1,
+  "channel_buffer_size": 12000
+}

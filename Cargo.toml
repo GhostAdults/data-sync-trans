@@ -36,7 +36,7 @@ config = { version = "0.15.19", features = ["json"] }
 uuid = { version = "1.11", features = ["v4"] }
 tokio-util = "0.7"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter", "json"] }
-tokio = { version = "1.36", features = ["rt-multi-thread", "macros"] }
+tokio = { version = "1.36", features = ["rt-multi-thread", "macros", "signal"] }
 # flutter_rust_bridge = "=2.11.1" //暂时不使用flutter_rust_bridge，后续如果需要再添加
 regex = "1.10"
 rust_decimal = "1.36"
@@ -51,6 +51,7 @@ anyhow = "1.0"
 axum = "0.7"
 rand = "0.10"
 inventory = "0.3"
+mysql_cdc = "0.2"
 sqlx = { version = "0.7", default-features = false, features = [
     "runtime-tokio-rustls",
     "runtime-tokio",

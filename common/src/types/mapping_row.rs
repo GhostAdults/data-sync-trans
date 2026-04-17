@@ -270,7 +270,7 @@ mod tests {
         );
 
         let row = MappingRow::from_values(values, serde_json::json!({"source": "test"}));
-
+        println!("Created MappingRow: {:?}", row);
         assert_eq!(row.len(), 2);
         assert!(row.contains("id"));
         assert!(row.contains("name"));

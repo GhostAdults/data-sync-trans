@@ -2,7 +2,7 @@ use crate::rdbms_reader_util::rdbms_reader::count_total_records;
 use crate::rdbms_reader_util::rdbms_reader::RdbmsJob;
 use anyhow::Result;
 use relus_common::constant::key::SPLIT_FACTOR;
-use crate::{ReadTask, SplitReaderResult};
+use crate::{ReadTask, SplitReaderResult, StreamMode};
 use relus_connector_rdbms::pool::{ColumnValue, DbKind, RdbmsPool};
 use relus_connector_rdbms::util::{build_select_query_for, get_pool_from_config};
 use serde_json::Value as JsonValue;
@@ -21,6 +21,7 @@ pub async fn do_split(rdbms_job: &RdbmsJob, advice_number: usize) -> SplitReader
             warn!("获取数据库连接池失败: {:?}", e);
             return SplitReaderResult {
                 total_records: 0,
+                stream_mode: StreamMode::Finite,
                 tasks: vec![],
             };
         }
@@ -136,6 +137,7 @@ pub async fn do_split(rdbms_job: &RdbmsJob, advice_number: usize) -> SplitReader
     SplitReaderResult {
         total_records,
         tasks,
+        stream_mode: StreamMode::Finite,
     }
 }
 

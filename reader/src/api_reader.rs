@@ -6,7 +6,7 @@
 
 use anyhow::Result;
 use futures::stream;
-use crate::{JsonStream, ReadTask, ReaderJob, ReaderTask, SplitReaderResult};
+use crate::{JsonStream, ReadTask, ReaderJob, ReaderTask, SplitReaderResult, StreamMode};
 use relus_common::JobConfig;
 use serde_json::Value as JsonValue;
 use std::sync::Arc;
@@ -41,6 +41,7 @@ impl ReaderJob for ApiReader {
     async fn split(&self, _reader_threads: usize) -> Result<SplitReaderResult> {
         Ok(SplitReaderResult {
             total_records: 0,
+            stream_mode: StreamMode::Finite,
             tasks: vec![ReadTask {
                 task_id: 0,
                 conn: JsonValue::Null,
