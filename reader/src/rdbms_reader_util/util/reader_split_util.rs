@@ -41,7 +41,7 @@ pub async fn do_split(rdbms_job: &RdbmsJob, advice_number: usize) -> SplitReader
         Ok(count) => count,
         Err(_) => 0,
     };
-    let data_source_config = &rdbms_job.original_config.input.config;
+    let data_source_config = &rdbms_job.original_config.source.config;
     let conns: Vec<JsonValue> = data_source_config
         .get("connections")
         .and_then(|v| v.as_array())

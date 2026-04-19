@@ -5,7 +5,7 @@
 //! `DatabaseReader` 负责生命周期管理和数据读取。
 
 use anyhow::Result;
-use crate::{JsonStream, ReadTask, ReaderJob, ReaderTask, SplitReaderResult};
+use crate::{JsonStream, ReadTask, DataReaderJob, DataReaderTask, SplitReaderResult};
 use std::sync::Arc;
 use tracing::info;
 
@@ -43,9 +43,9 @@ impl DatabaseJob {
     }
 
     fn build_rdbms_job(&self) -> RdbmsJob {
-        let db_config = self.original_config.input.parse_database_config().unwrap();
+        let db_config = self.original_config.source.parse_database_config().unwrap();
 
-        let input = &self.original_config.input;
+        let input = &self.original_config.source;
         let split_pk = input.config_str("split_pk");
         let where_clause = input.config_str("where");
         let columns = input.config_str("columns").unwrap_or_else(|| {
@@ -61,8 +61,8 @@ impl DatabaseJob {
         let rdbms_config = RdbmsConfig {
             table: db_config.table,
             table_count: 1,
-            is_table_mode: self.original_config.input.is_table_mode,
-            query_sql: self.original_config.input.query_sql.clone(),
+            is_table_mode: self.original_config.source.is_table_mode,
+            query_sql: self.original_config.source.query_sql.clone(),
             column_mapping: self.original_config.column_mapping.clone(),
             column_types: self.original_config.column_types.clone(),
             split_pk,
@@ -87,18 +87,18 @@ impl DatabaseJob {
 }
 
 #[async_trait::async_trait]
-impl ReaderJob for DatabaseReader {
+impl DataReaderJob for DatabaseReader {
     async fn split(&self, reader_threads: usize) -> Result<SplitReaderResult> {
         let rdbms_reader: RdbmsReader = self.job.discover().await?;
         rdbms_reader.split(reader_threads).await
     }
     fn description(&self) -> String {
-        format!("{}", self.job.original_config.input.name)
+        format!("{}", self.job.original_config.source.name)
     }
 }
 
 #[async_trait::async_trait]
-impl ReaderTask for DatabaseReader {
+impl DataReaderTask for DatabaseReader {
     async fn read_data(&self, task: &ReadTask) -> Result<JsonStream> {
         let rdbms_reader: RdbmsReader = self.job.discover().await?;
         rdbms_reader.read_data(task).await

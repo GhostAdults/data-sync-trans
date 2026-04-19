@@ -7,7 +7,7 @@
 use crate::rdbms_reader_util::util::*;
 use anyhow::Result;
 use futures::{stream, StreamExt};
-use crate::{JsonStream, ReadTask, ReaderJob, ReaderTask, SplitReaderResult};
+use crate::{JsonStream, ReadTask, DataReaderJob, DataReaderTask, SplitReaderResult};
 use relus_common::JobConfig;
 use relus_connector_rdbms::pool::RdbmsPool;
 use relus_connector_rdbms::schema::{MetadataDiscoverer, RdbmsDiscoverer, TableSchema};
@@ -50,7 +50,7 @@ impl RdbmsReader {
 }
 
 #[async_trait::async_trait]
-impl ReaderJob for RdbmsReader {
+impl DataReaderJob for RdbmsReader {
     async fn split(&self, reader_threads: usize) -> Result<SplitReaderResult> {
         let result = reader_split_util::do_split(&self.job, reader_threads).await;
         Ok(result)
@@ -102,7 +102,7 @@ impl RdbmsJob {
 /// 每个 task 在 split 阶段已被切分为 offset/limit 分片，
 /// 在 async 上下文中 collect 行后包装为 `'static` JsonStream。
 #[async_trait::async_trait]
-impl ReaderTask for RdbmsReader {
+impl DataReaderTask for RdbmsReader {
     async fn read_data(&self, slice_task: &ReadTask) -> Result<JsonStream> {
         let pool = get_pool_from_config(&self.job.original_config).await?;
 

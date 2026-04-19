@@ -6,7 +6,7 @@
 
 use anyhow::Result;
 use futures::stream;
-use crate::{JsonStream, ReadTask, ReaderJob, ReaderTask, SplitReaderResult, StreamMode};
+use crate::{JsonStream, ReadTask, DataReaderJob, DataReaderTask, SplitReaderResult, StreamMode};
 use relus_common::JobConfig;
 use serde_json::Value as JsonValue;
 use std::sync::Arc;
@@ -37,7 +37,7 @@ impl ApiReader {
 }
 
 #[async_trait::async_trait]
-impl ReaderJob for ApiReader {
+impl DataReaderJob for ApiReader {
     async fn split(&self, _reader_threads: usize) -> Result<SplitReaderResult> {
         Ok(SplitReaderResult {
             total_records: 0,
@@ -52,12 +52,12 @@ impl ReaderJob for ApiReader {
         })
     }
     fn description(&self) -> String {
-        format!("ApiReader (source: {})", self.job.config.input.name)
+        format!("ApiReader (source: {})", self.job.config.source.name)
     }
 }
 
 #[async_trait::async_trait]
-impl ReaderTask for ApiReader {
+impl DataReaderTask for ApiReader {
     async fn read_data(&self, task: &ReadTask) -> Result<JsonStream> {
         info!("Reader-{} 获取 (API 数据源)", task.task_id);
         let items = util::client_tool::fetch_from_api(&self.job.config).await?;

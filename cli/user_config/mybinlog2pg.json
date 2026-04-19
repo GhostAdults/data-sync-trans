@@ -1,11 +1,13 @@
 {
   "id": "binlog_sync",
-  "input": {
+  "source": {
     "name": "binlog_source",
     "type": "mysql_binlog",
     "config": {
       "connection": {
-        "url": "mysql://root:123456@127.0.0.1:3306/my_db",
+        "host": "127.0.0.1",
+        "port": 3306,
+        "database": "my_db",
         "username": "root",
         "password": "123456",
         "server_id": 1,
@@ -14,13 +16,18 @@
       }
     }
   },
-  "output": {
+  "target": {
     "name": "db_target",
     "type": "database",
+    "writer_mode": "insert",
     "config": {
       "connection": {
-        "db_type": "postgres",
-        "url": "postgres://postgres:123456@127.0.0.1:5432/postgres",
+        "type": "postgres",
+        "host": "127.0.0.1",
+        "port": 5432,
+        "database": "postgres",
+        "username": "postgres",
+        "password": "123456",
         "table": "user_w",
         "key_columns": [
           "id"
@@ -41,7 +48,7 @@
     "userAccount": "string",
     "userPassword": "string"
   },
-  "mode": "insert",
+  "sync_mode": "cdc",
   "batch_size": 1,
   "channel_buffer_size": 12000
 }

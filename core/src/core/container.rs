@@ -8,6 +8,8 @@
 //!
 //! Core 层负责 stream 消费、buffer 切分、RecordBuilder mapping 和 channel 发送
 
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use anyhow::Result;
 use futures::stream::FuturesUnordered;
 use futures::StreamExt;
@@ -17,8 +19,8 @@ use relus_common::constant::pipeline::{
 };
 use relus_common::pipeline::PipelineMessage;
 use relus_common::types::SourceType;
-use relus_reader::{ReadTask, Reader, StreamMode};
-use relus_writer::{WriteTask, Writer};
+use relus_reader::{ReadTask, DataReader, StreamMode};
+use relus_writer::{WriteTask, DataWriter};
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 use std::sync::Arc;
@@ -38,6 +40,7 @@ struct PairResult {
     read_count: usize,
     write_count: usize,
     error: Option<anyhow::Error>,
+    shutdown: bool,
 }
 
 struct GroupResult {
@@ -45,6 +48,7 @@ struct GroupResult {
     total_read: usize,
     total_written: usize,
     error: Option<anyhow::Error>,
+    shutdown: bool,
 }
 
 /// 管道配置
@@ -129,6 +133,7 @@ pub struct PipelineStats {
     pub records_failed: usize,
     pub elapsed_secs: f64,
     pub throughput: f64,
+    pub shutdown: bool,
 }
 
 impl PipelineStats {
@@ -146,15 +151,15 @@ impl PipelineStats {
 /// 执行管道：Reader → Writer 1:1
 pub async fn run_pipeline(
     config: PipelineConfig,
-    reader: Box<dyn Reader>,
-    writer: Box<dyn Writer>,
+    reader: Box<dyn DataReader>,
+    writer: Box<dyn DataWriter>,
     job_config: Arc<relus_common::JobConfig>,
 ) -> Result<PipelineStats> {
-    let reader: Arc<dyn Reader> = Arc::from(reader);
-    let writer: Arc<dyn Writer> = Arc::from(writer);
+    let reader: Arc<dyn DataReader> = Arc::from(reader);
+    let writer: Arc<dyn DataWriter> = Arc::from(writer);
 
     // 从 JobConfig 构建 RecordBuilder
-    let source_type = SourceType::from_str(&job_config.input.source_type);
+    let source_type = SourceType::from_str(&job_config.source.source_type);
     let record_builder = Arc::new(
         RecordBuilder::new(
             job_config.column_mapping.clone(),
@@ -170,7 +175,7 @@ pub async fn run_pipeline(
 /// consume_stream_and_send
 async fn csas(
     pair_id: usize,
-    reader: Arc<dyn Reader>,
+    reader: Arc<dyn DataReader>,
     task: &ReadTask,
     batch_size: usize,
     builder: &RecordBuilder,
@@ -210,8 +215,8 @@ async fn csas(
 
 async fn run_task_pair(
     pair_id: usize,
-    reader: Arc<dyn Reader>,
-    writer: Arc<dyn Writer>,
+    reader: Arc<dyn DataReader>,
+    writer: Arc<dyn DataWriter>,
     read_task: ReadTask,
     write_task: WriteTask,
     buffer_size: usize,
@@ -221,10 +226,12 @@ async fn run_task_pair(
     stream_mode: StreamMode,
 ) -> PairResult {
     let (tx, rx) = mpsc::channel(buffer_size);
+    let shutdown_flag = Arc::new(AtomicBool::new(false));
 
     let r = Arc::clone(&reader);
     let cancel_r = Arc::clone(&cancel);
     let builder = Arc::clone(&record_builder);
+    let shutdown_r = Arc::clone(&shutdown_flag);
     let r_handle = tokio::spawn(async move {
         tokio::select! {
             result = csas(pair_id, r, &read_task, batch_size, &builder, &tx) => {
@@ -252,7 +259,6 @@ async fn run_task_pair(
                 warn!("Reader-{} 被终止（其他任务失败）", pair_id);
                 Err(anyhow::anyhow!("Reader-{} 被终止", pair_id))
             }
-            // os windows ctrl+c 信号
             () = async {
                 if matches!(stream_mode, StreamMode::Infinite) {
                     let _ = tokio::signal::ctrl_c().await;
@@ -260,11 +266,12 @@ async fn run_task_pair(
                     std::future::pending::<()>().await;
                 }
             } => {
-                println!("[Pipeline] Stoping...");
-                info!("[Pipeline] Exit with: Ctrl+C signal，开始关闭");
-                reader.shutdown(); // close reader stream
+                println!("[Pipeline] 正在停止...");
+                info!("[Pipeline] 收到 Ctrl+C 信号，开始优雅关闭");
+                shutdown_r.store(true, Ordering::Relaxed);
+                reader.shutdown();
                 cancel_r.notify_waiters();
-                Err(anyhow::anyhow!("Reader-{} 进程被终止", pair_id))
+                Ok(0)
             }
         }
     });
@@ -281,8 +288,8 @@ async fn run_task_pair(
                 result
             }
             () = cancel_w.notified() => {
-                warn!("Writer-{} 被终止（其他任务失败）", pair_id);
-                Err(anyhow::anyhow!("Writer-{} 被终止", pair_id))
+                warn!("Writer-{} 正常关闭", pair_id);
+                Ok(0)
             }
         }
     });
@@ -297,24 +304,29 @@ async fn run_task_pair(
         Err(e) => Err(anyhow::anyhow!("Writer-{} 任务崩溃: {}", pair_id, e)),
     };
 
+    let is_shutdown = shutdown_flag.load(Ordering::Relaxed);
+
     match (reader_result, writer_result) {
         (Ok(read_count), Ok(write_count)) => PairResult {
             pair_id,
             read_count,
             write_count,
             error: None,
+            shutdown: is_shutdown,
         },
         (Err(e), Ok(_)) => PairResult {
             pair_id,
             read_count: 0,
             write_count: 0,
             error: Some(e),
+            shutdown: is_shutdown,
         },
         (Ok(_), Err(e)) => PairResult {
             pair_id,
             read_count: 0,
             write_count: 0,
             error: Some(e),
+            shutdown: is_shutdown,
         },
         (Err(reader_err), Err(writer_err)) => PairResult {
             pair_id,
@@ -325,6 +337,7 @@ async fn run_task_pair(
                 reader_err,
                 writer_err
             )),
+            shutdown: is_shutdown,
         },
     }
 }
@@ -333,8 +346,8 @@ async fn run_task_group(
     group_id: usize,
     tasks: Vec<(usize, ReadTask, WriteTask)>,
     concurrency: usize,
-    reader: Arc<dyn Reader>,
-    writer: Arc<dyn Writer>,
+    reader: Arc<dyn DataReader>,
+    writer: Arc<dyn DataWriter>,
     buffer_size: usize,
     batch_size: usize,
     record_builder: Arc<RecordBuilder>,
@@ -349,6 +362,7 @@ async fn run_task_group(
     let mut total_read = 0usize;
     let mut total_written = 0usize;
     let mut first_error: Option<anyhow::Error> = None;
+    let mut group_shutdown = false;
 
     while running.len() < concurrency {
         if let Some((pair_id, read_task, write_task)) = queue.pop_front() {
@@ -370,12 +384,16 @@ async fn run_task_group(
     }
 
     while let Some(pair_result) = running.next().await {
+        if pair_result.shutdown {
+            group_shutdown = true;
+        }
+
         if let Some(e) = pair_result.error {
             error!(
                 "TaskGroup-{} 的 Pair-{} 失败: {}",
                 group_id, pair_result.pair_id, e
             );
-            if first_error.is_none() {
+            if first_error.is_none() && !pair_result.shutdown {
                 first_error = Some(e);
             }
             cancel.notify_waiters();
@@ -417,14 +435,15 @@ async fn run_task_group(
         total_read,
         total_written,
         error: first_error,
+        shutdown: group_shutdown,
     }
 }
 
 /// 1:1 Pair
 async fn run_paired_pipeline(
     config: &PipelineConfig,
-    reader: Arc<dyn Reader>,
-    writer: Arc<dyn Writer>,
+    reader: Arc<dyn DataReader>,
+    writer: Arc<dyn DataWriter>,
     record_builder: Arc<RecordBuilder>,
 ) -> Result<PipelineStats> {
     let start_time = Instant::now();
@@ -524,18 +543,22 @@ async fn run_paired_pipeline(
     let mut total_read = 0usize;
     let mut total_written = 0usize;
     let mut first_error: Option<anyhow::Error> = None;
+    let mut pipeline_shutdown = false;
 
     while let Some(group_result) = group_handles.next().await {
         match group_result {
             Ok(result) => {
                 total_read += result.total_read;
                 total_written += result.total_written;
+                if result.shutdown {
+                    pipeline_shutdown = true;
+                }
                 info!(
                     "TaskGroup-{} 结束: read={}, write={}",
                     result.group_id, result.total_read, result.total_written
                 );
                 if let Some(e) = result.error {
-                    if first_error.is_none() {
+                    if first_error.is_none() && !result.shutdown {
                         first_error = Some(e);
                     }
                 }
@@ -554,6 +577,7 @@ async fn run_paired_pipeline(
         records_read: total_read,
         records_written: total_written,
         elapsed_secs: elapsed.as_secs_f64(),
+        shutdown: pipeline_shutdown,
         ..Default::default()
     };
     stats.records_failed = stats.records_failed();

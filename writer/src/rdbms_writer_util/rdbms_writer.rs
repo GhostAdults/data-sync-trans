@@ -16,7 +16,7 @@ use tokio::sync::mpsc;
 use tracing::{error, info};
 
 use crate::rdbms_writer_util::util::writer_split_util;
-use crate::{SplitWriterResult, WriteMode, WriteTask, WriterJob, WriterTask};
+use crate::{SplitWriterResult, WriteMode, WriteTask, DataWriterJob, DataWriterTask};
 
 /// RDBMS 写入配置
 #[derive(Debug, Clone)]
@@ -49,7 +49,7 @@ impl RdbmsWriter {
 }
 
 #[async_trait::async_trait]
-impl WriterJob for RdbmsWriter {
+impl DataWriterJob for RdbmsWriter {
     async fn split(&self, writer_threads: usize) -> Result<SplitWriterResult> {
         let result = writer_split_util::do_split(&self.job.original_config, writer_threads);
         Ok(result)
@@ -288,7 +288,7 @@ impl RdbmsWriterExecutor {
 }
 
 #[async_trait::async_trait]
-impl WriterTask for RdbmsWriter {
+impl DataWriterTask for RdbmsWriter {
     async fn write_data(
         &self,
         task: WriteTask,

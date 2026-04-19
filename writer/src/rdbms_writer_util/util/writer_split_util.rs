@@ -11,7 +11,8 @@ use crate::{SplitWriterResult, WriteMode, WriteTask};
 /// 切分 Writer 任务
 pub fn do_split(original_config: &Arc<JobConfig>, advice_number: usize) -> SplitWriterResult {
     let mode = original_config
-        .mode
+        .target
+        .writer_mode
         .as_deref()
         .map(WriteMode::from_str)
         .unwrap_or(WriteMode::Insert);

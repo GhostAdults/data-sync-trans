@@ -15,7 +15,7 @@ use crate::rdbms_writer_util::rdbms_writer::{
     PipelineRowWriter, RdbmsConfig, RdbmsJob, RdbmsWriter,
 };
 use relus_common::constant::pipeline::DEFAULT_BATCH_SIZE;
-use crate::{SplitWriterResult, WriteMode, WriteTask, WriterJob, WriterTask};
+use crate::{SplitWriterResult, WriteMode, WriteTask, DataWriterJob, DataWriterTask};
 
 pub struct DatabaseWriter {
     job: DatabaseJob,
@@ -38,11 +38,12 @@ impl DatabaseJob {
     }
 
     fn build_rdbms_config(&self) -> Result<RdbmsConfig> {
-        let db_config = self.original_config.output.parse_database_config()?;
+        let db_config = self.original_config.target.parse_database_config()?;
 
         let mode = self
             .original_config
-            .mode
+            .target
+            .writer_mode
             .as_deref()
             .map(WriteMode::from_str)
             .unwrap_or(WriteMode::Insert);
@@ -73,18 +74,18 @@ impl DatabaseJob {
 }
 
 #[async_trait::async_trait]
-impl WriterJob for DatabaseWriter {
+impl DataWriterJob for DatabaseWriter {
     async fn split(&self, writer_threads: usize) -> Result<SplitWriterResult> {
         let rdbms_writer = self.job.build_rdbms_writer()?;
         rdbms_writer.split(writer_threads).await
     }
     fn description(&self) -> String {
-        format!("{}", self.job.original_config.output.name)
+        format!("{}", self.job.original_config.target.name)
     }
 }
 
 #[async_trait::async_trait]
-impl WriterTask for DatabaseWriter {
+impl DataWriterTask for DatabaseWriter {
     async fn write_data(
         &self,
         task: WriteTask,

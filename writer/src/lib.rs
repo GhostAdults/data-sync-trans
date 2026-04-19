@@ -54,14 +54,14 @@ impl WriteMode {
 
 /// Writer Job trait
 #[async_trait::async_trait]
-pub trait WriterJob: Send + Sync {
+pub trait DataWriterJob: Send + Sync {
     async fn split(&self, writer_threads: usize) -> Result<SplitWriterResult>;
     fn description(&self) -> String;
 }
 
 /// Writer Task trait
 #[async_trait::async_trait]
-pub trait WriterTask: Send + Sync {
+pub trait DataWriterTask: Send + Sync {
     async fn write_data(
         &self,
         task: WriteTask,
@@ -69,18 +69,18 @@ pub trait WriterTask: Send + Sync {
     ) -> Result<usize>;
 }
 
-/// Writer = WriterJob + WriterTask
+/// Writer = DataWriterJob + DataWriterTask
 #[async_trait::async_trait]
-pub trait Writer: WriterJob + WriterTask {}
+pub trait DataWriter: DataWriterJob + DataWriterTask {}
 
 #[async_trait::async_trait]
-impl<T: WriterJob + WriterTask> Writer for T {}
+impl<T: DataWriterJob + DataWriterTask> DataWriter for T {}
 
 // ==========================================
 // Writer 全局注册表
 // ==========================================
 
-type WriterCreator = fn(Arc<JobConfig>) -> Result<Box<dyn Writer>>;
+type WriterCreator = fn(Arc<JobConfig>) -> Result<Box<dyn DataWriter>>;
 
 /// Writer 插件
 pub struct WriterPlugin {
@@ -118,7 +118,7 @@ impl WriterRegistry {
         &self,
         source_type: &str,
         config: Arc<JobConfig>,
-    ) -> Result<Box<dyn Writer>> {
+    ) -> Result<Box<dyn DataWriter>> {
         let creators = self.creators.read().unwrap();
         let creator = creators.get(source_type).ok_or_else(|| {
             anyhow::anyhow!(

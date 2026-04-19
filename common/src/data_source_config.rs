@@ -11,6 +11,8 @@ pub struct DataSourceConfig {
     #[serde(default = "default_is_table_mode")]
     pub is_table_mode: bool,
     pub query_sql: Option<Vec<String>>,
+    #[serde(default)]
+    pub writer_mode: Option<String>,
     pub config: Value,
 }
 
@@ -20,7 +22,19 @@ fn default_is_table_mode() -> bool {
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct DbConfig {
-    pub url: String,
+    #[serde(rename = "type", default)]
+    pub db_type: String,
+    #[serde(default)]
+    pub host: String,
+    #[serde(default = "default_port")]
+    pub port: u16,
+    #[serde(default)]
+    pub database: String,
+    #[serde(default)]
+    pub username: String,
+    #[serde(default)]
+    pub password: String,
+    #[serde(default)]
     pub table: String,
     pub key_columns: Option<Vec<String>>,
     pub max_connections: Option<u32>,
@@ -28,16 +42,38 @@ pub struct DbConfig {
     pub use_transaction: Option<bool>,
 }
 
+fn default_port() -> u16 {
+    3306
+}
+
 impl Default for DbConfig {
     fn default() -> Self {
         Self {
-            url: "".to_string(),
-            table: "".to_string(),
+            db_type: String::new(),
+            host: "127.0.0.1".to_string(),
+            port: 3306,
+            database: String::new(),
+            username: String::new(),
+            password: String::new(),
+            table: String::new(),
             key_columns: Some(Vec::<String>::new()),
             max_connections: Some(10),
             acquire_timeout_secs: Some(30),
             use_transaction: Some(false),
         }
+    }
+}
+
+impl DbConfig {
+    pub fn to_url(&self) -> String {
+        let scheme = match self.db_type.as_str() {
+            "postgres" | "postgresql" => "postgresql",
+            _ => "mysql",
+        };
+        format!(
+            "{}://{}:{}@{}:{}/{}",
+            scheme, self.username, self.password, self.host, self.port, self.database
+        )
     }
 }
 
@@ -88,8 +124,33 @@ impl DataSourceConfig {
     pub fn parse_database_config(&self) -> Result<DbConfig> {
         let conn = self.extract_connection()?;
 
-        let url = conn
-            .get("url")
+        let db_type = conn
+            .get("type")
+            .or_else(|| conn.get("db_type"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("mysql")
+            .to_string();
+        let host = conn
+            .get("host")
+            .and_then(|v| v.as_str())
+            .unwrap_or("127.0.0.1")
+            .to_string();
+        let port = conn
+            .get("port")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(3306) as u16;
+        let database = conn
+            .get("database")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string();
+        let username = conn
+            .get("username")
+            .and_then(|v| v.as_str())
+            .unwrap_or("root")
+            .to_string();
+        let password = conn
+            .get("password")
             .and_then(|v| v.as_str())
             .unwrap_or_default()
             .to_string();
@@ -115,7 +176,12 @@ impl DataSourceConfig {
         let use_transaction = conn.get("use_transaction").and_then(|v| v.as_bool());
 
         Ok(DbConfig {
-            url,
+            db_type,
+            host,
+            port,
+            database,
+            username,
+            password,
             table,
             key_columns,
             max_connections,
@@ -130,7 +196,7 @@ impl DataSourceConfig {
         }
         self.extract_connection()
             .ok()
-            .and_then(|conn| conn.get("db_type"))
+            .and_then(|conn| conn.get("type").or_else(|| conn.get("db_type")))
             .and_then(|v| v.as_str())
             .map(|s| s.to_string())
     }

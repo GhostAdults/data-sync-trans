@@ -129,36 +129,49 @@ async fn main() -> Result<()> {
 
     // 获取数据库配置
     let input_config = &configs["tasks"][0]["input"]["config"]["connections"][0];
-    let db_url = input_config["url"].as_str().unwrap();
+    let db_type = input_config.get("type").and_then(|v| v.as_str()).unwrap_or("mysql");
+    let host = input_config.get("host").and_then(|v| v.as_str()).unwrap_or("127.0.0.1");
+    let port = input_config.get("port").and_then(|v| v.as_u64()).unwrap_or(3306);
+    let database = input_config.get("database").and_then(|v| v.as_str()).unwrap_or("my_db");
+    let username = input_config.get("username").and_then(|v| v.as_str()).unwrap_or("root");
+    let password = input_config.get("password").and_then(|v| v.as_str()).unwrap_or_default();
     let table_name = input_config["table"].as_str().unwrap();
 
-    println!("数据库: {}", db_url);
+    println!("数据库: {}://{}@{}:{}/{}", db_type, username, host, port, database);
     println!("目标表: {}", table_name);
     println!("缓存目录: {}", SCHEMA_CACHE_DIR);
 
     // 创建 JobConfig
     let job_config = JobConfig {
-        input: relus_common::data_source_config::DataSourceConfig {
+        source: relus_common::data_source_config::DataSourceConfig {
             name: "mysql_source".to_string(),
             source_type: "database".to_string(),
             is_table_mode: true,
             query_sql: None,
+            writer_mode: None,
             config: json!({
-                "db_type": "mysql",
-                "url": db_url,
-                "table": table_name,
+                "connection": {
+                    "type": db_type,
+                    "host": host,
+                    "port": port,
+                    "database": database,
+                    "username": username,
+                    "password": password,
+                    "table": table_name,
+                }
             }),
         },
-        output: relus_common::data_source_config::DataSourceConfig {
+        target: relus_common::data_source_config::DataSourceConfig {
             name: "dummy_target".to_string(),
             source_type: "database".to_string(),
             is_table_mode: true,
             query_sql: None,
+            writer_mode: None,
             config: json!({}),
         },
         column_mapping: BTreeMap::new(),
         column_types: None,
-        mode: Some("insert".to_string()),
+        sync_mode: None,
         batch_size: Some(100),
         channel_buffer_size: None,
     };

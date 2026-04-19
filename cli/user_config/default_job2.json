@@ -1,18 +1,20 @@
 {
   "id": "default",
-  "input": {
+  "source": {
     "name": "db_source",
     "type": "database",
     "config": {
       "split_pk": "id",
       "connections": [
         {
-          "db_type": "mysql",
-          "url": "mysql://root:123456@127.0.0.1:3306/my_db",
+          "type": "mysql",
+          "host": "127.0.0.1",
+          "port": 3306,
+          "database": "my_db",
+          "username": "root",
+          "password": "123456",
           "table": "user_x",
-          "key_columns": [
-            "id"
-          ],
+          "key_columns": ["id"],
           "max_connections": 20,
           "acquire_timeout_secs": 30,
           "use_transaction": true
@@ -20,13 +22,18 @@
       ]
     }
   },
-  "output": {
+  "target": {
     "name": "db_target",
     "type": "database",
+    "writer_mode": "insert",
     "config": {
       "connection": {
-        "db_type": "mysql",
-        "url": "mysql://root:123456@127.0.0.1:3306/my_db",
+        "type": "mysql",
+        "host": "127.0.0.1",
+        "port": 3306,
+        "database": "my_db",
+        "username": "root",
+        "password": "123456",
         "table": "user_w",
         "key_columns": [
           "id"
@@ -47,7 +54,7 @@
     "userAccount": "string",
     "userPassword": "string"
   },
-  "mode": "insert",
+  "sync_mode": "full",
   "batch_size": 12000,
   "channel_buffer_size": 12000
 }

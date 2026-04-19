@@ -15,7 +15,7 @@ use std::sync::Arc;
 use anyhow::Result;
 use serde_json::Value as JsonValue;
 
-use crate::{JsonStream, ReadTask, ReaderJob, ReaderTask, SplitReaderResult, StreamMode};
+use crate::{JsonStream, ReadTask, DataReaderJob, DataReaderTask, SplitReaderResult, StreamMode};
 use mysql_cdc::events::binlog_event::BinlogEvent;
 use mysql_cdc::events::row_events::mysql_value::MySqlValue;
 use mysql_cdc::events::row_events::row_data::RowData;
@@ -47,14 +47,16 @@ impl BinlogConfig {
         let conns = input.config.get("connections").and_then(|v| v.as_array());
         let source = conns.and_then(|a| a.first()).unwrap_or_else(|| &conn);
 
-        let url = source
-            .get("url")
-            .and_then(|v| v.as_str())
-            .unwrap_or_default();
-
         Ok(Self {
-            hostname: parse_host(url),
-            port: parse_port(url),
+            hostname: source
+                .get("host")
+                .and_then(|v| v.as_str())
+                .unwrap_or("127.0.0.1")
+                .to_string(),
+            port: source
+                .get("port")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(3306) as u16,
             username: source
                 .get("username")
                 .and_then(|v| v.as_str())
@@ -250,14 +252,14 @@ impl BinlogJob {
 
 impl BinlogReader {
     pub fn init(config: Arc<JobConfig>) -> Result<Self> {
-        let binlog_config = BinlogConfig::from_data_source_config(&config.input)?;
+        let binlog_config = BinlogConfig::from_data_source_config(&config.source)?;
         let job = BinlogJob::new(config, binlog_config);
         Ok(Self { job })
     }
 }
 
 #[async_trait::async_trait]
-impl ReaderJob for BinlogReader {
+impl DataReaderJob for BinlogReader {
     /// Binlog 是单流有序消费，返回单个 task
     async fn split(&self, _reader_threads: usize) -> Result<SplitReaderResult> {
         Ok(SplitReaderResult {
@@ -286,7 +288,7 @@ impl ReaderJob for BinlogReader {
 }
 
 #[async_trait::async_trait]
-impl ReaderTask for BinlogReader {
+impl DataReaderTask for BinlogReader {
     async fn read_data(&self, _task: &ReadTask) -> Result<JsonStream> {
         let config = self.job.binlog_config.clone();
         let column_names = self.job.column_names.clone();
@@ -309,7 +311,7 @@ impl ReaderTask for BinlogReader {
 
     fn shutdown(&self) {
         self.job.shutdown.store(true, Ordering::Relaxed);
-        tracing::info!("[BinlogReader] 收到 shutdown 信号");
+        tracing::info!("[BinlogReader] shutdown");
     }
 }
 
@@ -385,8 +387,6 @@ fn run_binlog_stream(
 
     for result in replicate_result {
         if shutdown.load(Ordering::Relaxed) {
-            println!("[BinlogReader] stoping...");
-            tracing::info!("[BinlogReader] 收到 shutdown 信号，正在关闭");
             break;
         }
 
@@ -503,36 +503,6 @@ fn format_table(database: &str, table: &str) -> String {
     format!("{}.{}", database, table)
 }
 
-fn parse_host(url: &str) -> String {
-    // mysql://user:pass@host:port/db -> host:port/db
-    let after_at = url.split('@').last().unwrap_or("127.0.0.1");
-    // host:port/db -> host
-    after_at
-        .split(':')
-        .next()
-        .unwrap_or("127.0.0.1")
-        .to_string()
-}
-
-fn parse_port(url: &str) -> u16 {
-    // mysql://user:pass@host:port/db -> host:port/db
-    let after_at = match url.split('@').last() {
-        Some(s) => s,
-        None => return 3306,
-    };
-    // host:port/db -> port/db
-    let after_colon = match after_at.split(':').nth(1) {
-        Some(s) => s,
-        None => return 3306,
-    };
-    // port/db -> port
-    after_colon
-        .split('/')
-        .next()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(3306)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -589,6 +559,7 @@ mod tests {
             source_type: "mysql_binlog".to_string(),
             is_table_mode: true,
             query_sql: None,
+            writer_mode: None,
             config,
         };
 

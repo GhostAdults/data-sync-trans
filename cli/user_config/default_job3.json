@@ -1,47 +1,64 @@
 {
   "id": "default",
-  "input": {
+  "source": {
     "name": "db_source",
     "type": "database",
     "config": {
       "split_pk": "id",
       "connections": [
         {
-          "db_type": "postgres",
-          "url": "postgres://postgres:123456@127.0.0.1:5432/postgres",
-          "table": "user_x",
-          "key_columns": ["id"],
-          "max_connections": 20,
+          "type": "mysql",
+          "host": "127.0.0.1",
+          "port": 3306,
+          "database": "my_db",
+          "username": "root",
+          "password": "123456",
+          "table": "sys_iot_device_wx",
+          "key_columns": [
+            "id"
+          ],
+          "max_connections": 10,
           "acquire_timeout_secs": 30,
           "use_transaction": true
         }
       ]
     }
   },
-  "output": {
+  "target": {
     "name": "db_target",
     "type": "database",
+    "writer_mode": "insert",
     "config": {
       "connection": {
-        "db_type": "postgres",
-        "url": "postgres://postgres:123456@127.0.0.1:5432/postgres",
-        "table": "user_w",
-        "key_columns": ["id"],
-        "max_connections": 20,
+        "type": "mysql",
+        "host": "127.0.0.1",
+        "port": 3306,
+        "database": "my_db",
+        "username": "root",
+        "password": "123456",
+        "table": "sys_iot_device_sl",
+        "key_columns": [
+          "id"
+        ],
+        "max_connections": 10,
         "acquire_timeout_secs": 30,
         "use_transaction": true
       }
     }
   },
   "column_mapping": {
-    "userAccount": "userAccount",
-    "userPassword": "userPassword"
+    "id": "id",
+    "device_name": "device_name",
+    "device_sn": "device_sn",
+    "metadata": "metadata"
   },
   "column_types": {
-    "userAccount": "string",
-    "userPassword": "string"
+    "id": "string",
+    "device_name": "string",
+    "device_sn": "string",
+    "metadata": "string"
   },
-  "mode": "insert",
-  "batch_size": 12000,
-  "channel_buffer_size": 12000
+  "sync_mode": "full",
+  "batch_size": 5000,
+  "channel_buffer_size": 5000
 }

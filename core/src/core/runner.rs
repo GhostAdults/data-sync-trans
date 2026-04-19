@@ -12,8 +12,8 @@ use relus_common::constant::pipeline::{
     DEFAULT_READER_THREADS,
 };
 use relus_common::job_config::JobConfig;
-use relus_reader::Reader;
-use relus_writer::Writer;
+use relus_reader::DataReader;
+use relus_writer::DataWriter;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -94,6 +94,7 @@ pub enum RunStatus {
     Success,
     Failed,
     Partial,
+    Shutdown,
 }
 
 /// 统计信息
@@ -146,19 +147,22 @@ impl Runner {
     /// 执行同步任务
     pub async fn run(
         &self,
-        reader: Box<dyn Reader>,
-        writer: Box<dyn Writer>,
+        reader: Box<dyn DataReader>,
+        writer: Box<dyn DataWriter>,
         job_config: Arc<JobConfig>,
     ) -> Result<RunResult> {
         let start_time = Instant::now();
         let pipeline_config = self.config.to_pipeline_config();
         let pipeline_stats = run_pipeline(pipeline_config, reader, writer, job_config).await?;
+        let is_shutdown = pipeline_stats.shutdown;
         let elapsed = start_time.elapsed();
         let mut stats = RunnerStats::from_pipeline(pipeline_stats);
         stats.elapsed_secs = elapsed.as_secs_f64();
         stats.calculate_throughput();
 
-        let status = if stats.records_failed > 0 {
+        let status = if is_shutdown {
+            RunStatus::Shutdown
+        } else if stats.records_failed > 0 {
             RunStatus::Partial
         } else {
             RunStatus::Success
@@ -183,8 +187,8 @@ pub async fn run_sync(config: Arc<JobConfig>) -> Result<RunResult> {
     let reader_registry = ReaderRegistry::instance();
     let writer_registry = WriterRegistry::instance();
 
-    let reader = reader_registry.prepare_reader(&config.input.source_type, Arc::clone(&config))?;
-    let writer = writer_registry.prepare_writer(&config.output.source_type, Arc::clone(&config))?;
+    let reader = reader_registry.prepare_reader(&config.source.source_type, Arc::clone(&config))?;
+    let writer = writer_registry.prepare_writer(&config.target.source_type, Arc::clone(&config))?;
 
     // 执行同步
     let runner = Runner::from_config(&config);

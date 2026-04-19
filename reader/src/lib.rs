@@ -2,6 +2,7 @@ pub mod api_reader;
 pub mod binlog_reader;
 pub mod database_reader;
 pub mod rdbms_reader_util;
+use std::io::Read;
 
 pub use api_reader::{ApiJob, ApiReader};
 pub use binlog_reader::{BinlogConfig, BinlogReader, CdcOp};
@@ -58,36 +59,36 @@ pub struct SplitReaderResult {
 
 /// Reader Job trait
 #[async_trait::async_trait]
-pub trait ReaderJob: Send + Sync {
+pub trait DataReaderJob: Send + Sync {
     async fn split(&self, reader_threads: usize) -> Result<SplitReaderResult>;
     fn description(&self) -> String;
 }
 
 /// Reader Task trait
 #[async_trait::async_trait]
-pub trait ReaderTask: Send + Sync {
+pub trait DataReaderTask: Send + Sync {
     async fn read_data(&self, task: &ReadTask) -> Result<JsonStream>;
 
     fn shutdown(&self) {}
 }
 
-/// Reader = ReaderJob + ReaderTask
+/// Reader = DataReaderJob + DataReaderTask
 #[async_trait::async_trait]
-pub trait Reader: ReaderJob + ReaderTask {}
+pub trait DataReader: DataReaderJob + DataReaderTask {}
 
 #[async_trait::async_trait]
-impl<T: ReaderJob + ReaderTask> Reader for T {}
+impl<T: DataReaderJob + DataReaderTask> DataReader for T {}
 
 // ==========================================
 // Reader 全局注册表
 // ==========================================
 
 /// Reader 创建函数类型
-type ReaderCreator = fn(Arc<JobConfig>) -> Result<Box<dyn Reader>>;
+type ReaderCreator = fn(Arc<JobConfig>) -> Result<Box<dyn DataReader>>;
 
 /// Reader 插件（由各 reader 实现通过 inventory::submit! 注册）
 pub struct ReaderPlugin {
-    pub source_type: &'static str,
+    pub source_type: &'static str, //TODO 类型必须是一个枚举 source_type: SourceType
     pub create: ReaderCreator,
 }
 
@@ -122,7 +123,7 @@ impl ReaderRegistry {
         &self,
         source_type: &str,
         config: Arc<JobConfig>,
-    ) -> Result<Box<dyn Reader>> {
+    ) -> Result<Box<dyn DataReader>> {
         let creators = self.creators.read().unwrap();
         let creator = creators.get(source_type).ok_or_else(|| {
             anyhow::anyhow!(

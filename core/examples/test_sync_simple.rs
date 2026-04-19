@@ -189,11 +189,18 @@ async fn main() {
         query_sql: Some(vec![
             "SELECT id, type, site_number FROM zone_data".to_string()
         ]),
+        writer_mode: None,
         config: json!({
-            "db_type": "mysql",
-            "url": "mysql://root:123456@127.0.0.1:3306/my_db",
-            "table": "zone_data",
-            "key_columns": ["id"]
+            "connection": {
+                "type": "mysql",
+                "host": "127.0.0.1",
+                "port": 3306,
+                "database": "my_db",
+                "username": "root",
+                "password": "123456",
+                "table": "zone_data",
+                "key_columns": ["id"]
+            }
         }),
     };
 
@@ -202,11 +209,18 @@ async fn main() {
         source_type: "database".to_string(),
         is_table_mode: true,
         query_sql: None,
+        writer_mode: None,
         config: json!({
-            "db_type": "mysql",
-            "url": "mysql://root:123456@127.0.0.1:3306/my_db",
-            "table": "zone_data_r",
-            "key_columns": ["id"]
+            "connection": {
+                "type": "mysql",
+                "host": "127.0.0.1",
+                "port": 3306,
+                "database": "my_db",
+                "username": "root",
+                "password": "123456",
+                "table": "zone_data_r",
+                "key_columns": ["id"]
+            }
         }),
     };
 
@@ -229,17 +243,17 @@ async fn main() {
     // column_types.insert("createdAt".to_string(), "timestamp".to_string());
 
     let config = JobConfig {
-        input,
-        output,
+        source: input,
+        target: output,
         column_mapping,
         column_types: Some(column_types),
-        mode: Some("insert".to_string()),
+        sync_mode: None,
         batch_size: Some(100),
         channel_buffer_size: None,
     };
 
     println!("配置信息:");
-    println!("  同步模式: {:?}", config.mode);
+    println!("  同步模式: {:?}", config.sync_mode);
     println!("  批次大小: {:?}", config.batch_size);
     println!("  列类型配置:");
     if let Some(ref types) = config.column_types {

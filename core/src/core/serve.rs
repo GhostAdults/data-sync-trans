@@ -316,10 +316,10 @@ pub async fn sync_command(
         cfg.column_mapping = mapping.column_mapping;
         cfg.column_types = Some(mapping.column_types);
         if let Some(m) = mapping.mode {
-            cfg.mode = Some(m);
+            cfg.target.writer_mode = Some(m);
         }
         if let Some(k) = mapping.key_columns {
-            if let Some(obj) = cfg.output.config.as_object_mut() {
+            if let Some(obj) = cfg.target.config.as_object_mut() {
                 obj.insert("key_columns".to_string(), serde_json::json!(k));
             }
         }

@@ -99,7 +99,7 @@ pub async fn fetch_json(cfg: &ApiConfig) -> Result<JsonValue> {
 
 /// 从 API 获取数据
 pub async fn fetch_from_api(config: &JobConfig) -> Result<Vec<JsonValue>> {
-    let api_config = config.input.parse_api_config()?;
+    let api_config = config.source.parse_api_config()?;
     let resp = fetch_json(&api_config).await?;
     let items = extract_items(&resp, &api_config.items_json_path)?;
     Ok(items)

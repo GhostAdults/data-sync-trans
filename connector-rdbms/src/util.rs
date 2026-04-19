@@ -49,7 +49,7 @@ pub async fn get_pool_for(ds: &DataSourceConfig) -> Result<Arc<RdbmsPool>> {
     let db_type_str = ds.get_source_db_type();
 
     let kind = detect_db_kind(
-        &db_config.url,
+        &db_config.to_url(),
         db_type_str.as_ref().and_then(|s: &String| {
             if s.eq_ignore_ascii_case("postgres") {
                 Some(DbKind::Postgres)
@@ -64,18 +64,18 @@ pub async fn get_pool_for(ds: &DataSourceConfig) -> Result<Arc<RdbmsPool>> {
     let max_conns = db_config.max_connections.unwrap_or(20);
     let acq_timeout = db_config.acquire_timeout_secs.unwrap_or(60);
     Ok(Arc::new(
-        get_db_pool(&db_config.url, kind, max_conns, Some(acq_timeout)).await?,
+        get_db_pool(&db_config.to_url(), kind, max_conns, Some(acq_timeout)).await?,
     ))
 }
 
-/// Get database pool from JobConfig input
+/// Get database pool from JobConfig source
 pub async fn get_pool_from_config(cfg: &JobConfig) -> Result<Arc<RdbmsPool>> {
-    get_pool_for(&cfg.input).await
+    get_pool_for(&cfg.source).await
 }
 
-/// Get database pool from JobConfig output
+/// Get database pool from JobConfig target
 pub async fn get_pool_from_output(cfg: &JobConfig) -> Result<Arc<RdbmsPool>> {
-    get_pool_for(&cfg.output).await
+    get_pool_for(&cfg.target).await
 }
 
 /// Build query SQL with LIMIT and OFFSET

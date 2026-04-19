@@ -1,6 +1,7 @@
 // cli 命令行参数解析
 // 包含所有子命令的枚举类型 命令行同步配置
 
+use crate::core::runner::RunStatus;
 use crate::core::serve::*;
 use crate::run_serve;
 use clap::{Parser, Subcommand};
@@ -79,7 +80,7 @@ pub fn run_cli(cmd: Commands) {
     match cmd {
         Commands::TestApi { config } => {
             let cfg = read_config(config).unwrap();
-            let api_config = cfg.input.parse_api_config().unwrap();
+            let api_config = cfg.source.parse_api_config().unwrap();
             let v = fetch_json(&api_config).unwrap();
             println!("{}", serde_json::to_string_pretty(&v).unwrap());
             let items = if let Some(p) = &api_config.items_json_path {
@@ -99,15 +100,25 @@ pub fn run_cli(cmd: Commands) {
                     .unwrap();
                 rt.block_on(async {
                     match sync_cli(cfg).await {
-                        Ok(result) => {
-                            println!(
-                                "complete:\n 任务读出 {} records\n 任务写入 {} records\n 耗时 {:.2}s\n TP {:.0} rec/s",
-                                result.stats.records_read,
-                                result.stats.records_written,
-                                result.stats.elapsed_secs,
-                                result.stats.throughput
-                            );
-                        }
+                        Ok(result) => match result.status {
+                            RunStatus::Shutdown => {
+                                println!(
+                                    "CDC 任务已停止\n 已读出 {} records\n 已写入 {} records\n 耗时 {:.2}s",
+                                    result.stats.records_read,
+                                    result.stats.records_written,
+                                    result.stats.elapsed_secs
+                                );
+                            }
+                            _ => {
+                                println!(
+                                    "complete:\n 任务读出 {} records\n 任务写入 {} records\n 耗时 {:.2}s\n TP {:.0} rec/s",
+                                    result.stats.records_read,
+                                    result.stats.records_written,
+                                    result.stats.elapsed_secs,
+                                    result.stats.throughput
+                                );
+                            }
+                        },
                         Err(e) => {
                             eprintln!("{}", e);
                         }
@@ -275,12 +286,8 @@ fn read_config(path: PathBuf) -> Result<JobConfig> {
     let data = fs::read_to_string(&path)
         .with_context(|| format!("读取配置文件失败: {}", path.display()))?;
     let cfg: JobConfig = serde_json::from_str(&data)
-        .or_else(|_| {
-            let v: Value = serde_json::from_str(&data)?;
-            serde_json::from_value(v)
-        })
-        .unwrap_or_else(|_| panic!("配置文件解析失败: {}", path.display()));
-    let db_config = cfg.input.parse_database_config()?;
+        .map_err(|e| anyhow::anyhow!("配置文件解析失败: {} - 错误: {}", path.display(), e))?;
+    let db_config = cfg.source.parse_database_config()?;
     if &db_config.table != "" {
         sanitize_identifier(&db_config.table)?;
     } else {

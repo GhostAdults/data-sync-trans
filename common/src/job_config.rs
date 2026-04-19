@@ -6,13 +6,29 @@ use crate::data_source_config::DataSourceConfig;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct JobConfig {
-    pub input: DataSourceConfig,
-    pub output: DataSourceConfig,
+    #[serde(alias = "input")]
+    pub source: DataSourceConfig,
+    #[serde(alias = "output")]
+    pub target: DataSourceConfig,
     pub column_mapping: BTreeMap<String, String>,
     pub column_types: Option<BTreeMap<String, String>>,
-    pub mode: Option<String>,
+    pub sync_mode: Option<SyncMode>,
     pub batch_size: Option<usize>,
     pub channel_buffer_size: Option<usize>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum SyncMode {
+    Full,
+    Cdc,
+    Hybrid,
+}
+
+impl Default for SyncMode {
+    fn default() -> Self {
+        SyncMode::Full
+    }
 }
 
 impl fmt::Display for JobConfig {
