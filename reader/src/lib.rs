@@ -2,7 +2,6 @@ pub mod api_reader;
 pub mod binlog_reader;
 pub mod database_reader;
 pub mod rdbms_reader_util;
-use std::io::Read;
 
 pub use api_reader::{ApiJob, ApiReader};
 pub use binlog_reader::{BinlogConfig, BinlogReader, CdcOp};

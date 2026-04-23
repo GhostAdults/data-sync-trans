@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use anyhow::{bail, Result};
 use relus_connector_rdbms::pool::{DbKind, RdbmsPool};
-use relus_connector_rdbms::sql_builder::{execute_db_write, prepare_write_batch};
+use relus_connector_rdbms::sql_builder::{execute_db_write, prepare_write_batch, validate_upsert_keys};
 use relus_connector_rdbms::util::get_pool_from_output;
 
 use relus_common::pipeline::PipelineMessage;
@@ -167,6 +167,11 @@ impl DataWriterTask for RdbmsWriter {
             RdbmsPool::Postgres(_) => DbKind::Postgres,
             RdbmsPool::Mysql(_) => DbKind::Mysql,
         };
+
+        if self.job.config.mode == WriteMode::Upsert {
+            validate_upsert_keys(&pool, &self.job.config.table, &self.job.config.key_columns).await?;
+        }
+
         let mut written = 0;
 
         while let Some(msg) = rx.recv().await {

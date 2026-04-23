@@ -12,6 +12,7 @@ use std::sync::Arc;
 use crate::core::axum_api::{h_describe, h_gen_mapping, h_list_tables, h_sync};
 use crate::core::runner::{run_sync, RunResult};
 use anyhow::Result;
+use tokio_util::sync::CancellationToken;
 use axum::routing::{get, post};
 use relus_common::app_config::value::ConfigValue;
 use relus_common::data_source_config::{ApiConfig, DbConfig};
@@ -141,12 +142,12 @@ fn guess_type(sql_type: &str) -> &'static str {
 
 /// 同步数据函数
 pub async fn sync(cfg: JobConfig) -> Result<RunResult> {
-    run_sync(Arc::new(cfg)).await
+    run_sync(Arc::new(cfg), CancellationToken::new()).await
 }
 
 /// CLI 同步
 pub async fn sync_cli(cfg: JobConfig) -> Result<RunResult> {
-    run_sync(Arc::new(cfg)).await
+    run_sync(Arc::new(cfg), CancellationToken::new()).await
 }
 
 pub async fn list_tables(q: TablesQuery) -> (StatusCode, Json<ApiResp<Vec<String>>>) {

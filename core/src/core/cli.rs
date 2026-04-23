@@ -1,8 +1,8 @@
 // cli 命令行参数解析
-// 包含所有子命令的枚举类型 命令行同步配置
 
 use crate::core::runner::RunStatus;
 use crate::core::serve::*;
+use crate::run_scheduler;
 use crate::run_serve;
 use clap::{Parser, Subcommand};
 use relus_common::{ApiConfig, JobConfig};
@@ -22,7 +22,7 @@ use std::process::Command;
 use tokio::runtime::Runtime;
 
 #[derive(Parser)]
-#[command(name = "data_trans")]
+#[command(name = "Relus CLI")]
 #[command(version)]
 #[command(about = "Relus 数据迁移工具 relus-cli@tingfengyu", long_about = None)]
 pub struct Cli {
@@ -73,6 +73,16 @@ pub enum Commands {
         host: String,
         #[arg(short = 'p', long, default_value_t = 30001)]
         port: u16,
+    },
+    /// 启动 TaskScheduler 常驻运行，进入交互式 REPL
+    #[command(visible_alias = "start")]
+    Run {
+        /// 指定一个或多个配置文件
+        #[arg(short, long)]
+        config: Option<Vec<PathBuf>>,
+        /// 指定配置文件目录，加载目录下所有 *.json
+        #[arg(short, long)]
+        jobs_dir: Option<PathBuf>,
     },
 }
 
@@ -269,6 +279,12 @@ pub fn run_cli(cmd: Commands) {
                 eprintln!("{}", e);
             } else {
                 println!("Server running on {}:{}", host, port);
+            }
+        }
+        Commands::Run { config, jobs_dir } => {
+            let configs = collect_job_configs(config, jobs_dir);
+            if let Err(e) = run_scheduler(configs) {
+                eprintln!("Run error: {}", e);
             }
         }
     }
@@ -505,4 +521,58 @@ fn guess_type(sql_type: &str) -> &'static str {
     } else {
         "text"
     }
+}
+
+/// 收集所有 JobConfig：从 --config 和 --jobs-dir
+fn collect_job_configs(
+    config_paths: Option<Vec<PathBuf>>,
+    jobs_dir: Option<PathBuf>,
+) -> Vec<(String, JobConfig)> {
+    let mut configs = Vec::new();
+
+    // --config 指定的文件
+    if let Some(paths) = config_paths {
+        for path in paths {
+            match load_job_config(&path) {
+                Ok((id, cfg)) => configs.push((id, cfg)),
+                Err(e) => eprintln!("Failed to load {}: {}", path.display(), e),
+            }
+        }
+    }
+
+    // --jobs-dir 指定的目录
+    if let Some(dir) = jobs_dir {
+        if let Ok(entries) = std::fs::read_dir(&dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.extension().map(|e| e == "json").unwrap_or(false) {
+                    match load_job_config(&path) {
+                        Ok((id, cfg)) => configs.push((id, cfg)),
+                        Err(e) => eprintln!("Failed to load {}: {}", path.display(), e),
+                    }
+                }
+            }
+        }
+    }
+
+    configs
+}
+
+fn load_job_config(path: &PathBuf) -> Result<(String, JobConfig)> {
+    let data = std::fs::read_to_string(path)
+        .with_context(|| format!("read failed: {}", path.display()))?;
+    let cfg: JobConfig =
+        serde_json::from_str(&data).with_context(|| format!("parse failed: {}", path.display()))?;
+
+    let job_id = cfg
+        .job_id
+        .clone()
+        .or_else(|| {
+            path.file_stem()
+                .and_then(|s| s.to_str())
+                .map(|s| s.to_string())
+        })
+        .ok_or_else(|| anyhow::anyhow!("job_id is required (in config or from filename)"))?;
+
+    Ok((job_id, cfg))
 }

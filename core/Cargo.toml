@@ -32,6 +32,10 @@ async-trait = { workspace = true }
 config = { version = "0.15.19", features = ["json"] }
 tracing = { workspace = true }
 uuid = { workspace = true }
+redb = "2"
+cron = { workspace = true }
+rustyline = { workspace = true }
+reqwest = { workspace = true }
 nom = "7.1"
 rust_decimal = { workspace = true }
 

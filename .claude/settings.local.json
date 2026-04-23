@@ -18,7 +18,12 @@
       "Bash(openspec archive:*)",
       "WebSearch",
       "Bash(mv openspec/changes/binlog-column-name-mapping openspec/changes/archive/2026-04-17-binlog-column-name-mapping)",
-      "Bash(mv openspec/changes/unified-stream-pipeline openspec/changes/archive/2026-04-17-unified-stream-pipeline)"
+      "Bash(mv openspec/changes/unified-stream-pipeline openspec/changes/archive/2026-04-17-unified-stream-pipeline)",
+      "Bash(cargo doc:*)",
+      "Bash(grep -r \"pub fn\\\\|pub struct\\\\|pub trait\\\\|pub enum\" target/doc/cron/src/*.rs)",
+      "Bash(grep -rn \"pub\" target/debug/.fingerprint/cron-*/lib-*)",
+      "Bash(grep -n \"tracing::\\\\|info!\\\\|warn!\\\\|error!\" E:/github/Relus/core/src/core/scheduler/*.rs E:/github/Relus/core/src/core/daemon/*.rs)",
+      "Bash(wc:*)"
     ]
   }
 }

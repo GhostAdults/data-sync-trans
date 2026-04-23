@@ -152,3 +152,47 @@ pub fn run_serve(host: String, port: u16) -> Result<()> {
     rt.block_on(async { core::serve::serve_http(host, port).await })?;
     Ok(())
 }
+
+
+/// 启动 TaskScheduler 常驻运行
+pub fn run_scheduler(configs: Vec<(String, relus_common::job_config::JobConfig)>) -> Result<()> {
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(4)
+        .enable_all()
+        .build()?;
+
+    rt.block_on(async {
+        let checkpoint_dir = relus_common::app_config::path::default_config_path("app_trans")
+            .parent()
+            .map(|p| p.join("checkpoints.redb"))
+            .unwrap_or_else(|| PathBuf::from("checkpoints.redb"));
+
+        let mut scheduler = crate::core::scheduler::TaskScheduler::new(checkpoint_dir)?;
+
+        for (job_id, config) in configs {
+            let schedule = config
+                .schedule
+                .as_ref()
+                .map(|s| crate::core::scheduler::Schedule::from_cli_str(&format!("{:?}", s)))
+                .unwrap_or_default();
+            match scheduler.submit_task(
+                job_id.clone(),
+                std::sync::Arc::new(config),
+                schedule,
+            ) {
+                Ok(id) => tracing::info!("[Run] job '{}' submitted", id),
+                Err(e) => tracing::error!("[Run] job '{}' submit failed: {}", job_id, e),
+            }
+        }
+
+        scheduler.start_repl();
+        tracing::info!("[Run] scheduler starting, waiting for tasks...");
+        scheduler.run().await;
+        tracing::info!("[Run] scheduler stopped");
+
+        Ok::<(), anyhow::Error>(())
+    })?;
+
+    // scheduler 已退出，强制终止进程（readline 线程可能仍在阻塞）
+    std::process::exit(0);
+}

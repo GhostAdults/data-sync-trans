@@ -15,6 +15,10 @@ pub struct JobConfig {
     pub sync_mode: Option<SyncMode>,
     pub batch_size: Option<usize>,
     pub channel_buffer_size: Option<usize>,
+    #[serde(default)]
+    pub job_id: Option<String>,
+    #[serde(default)]
+    pub schedule: Option<ScheduleConfig>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -29,6 +33,16 @@ impl Default for SyncMode {
     fn default() -> Self {
         SyncMode::Full
     }
+}
+
+/// 调度策略配置（可从 JSON 反序列化）
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(untagged)]
+pub enum ScheduleConfig {
+    /// cron 表达式
+    Cron(String),
+    /// 带类型标签
+    Typed { r#type: String, value: Option<String> },
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, Copy)]

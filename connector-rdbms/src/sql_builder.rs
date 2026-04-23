@@ -229,3 +229,88 @@ pub async fn execute_db_write(
 fn is_insert_style(sql: &str) -> bool {
     sql.trim_start().to_uppercase().starts_with("INSERT")
 }
+
+/// Upsert 前置校验：key_columns 对应的列在目标表上必须有 UNIQUE 索引（含 PRIMARY KEY）
+///
+/// MySQL ON DUPLICATE KEY UPDATE 和 PostgreSQL ON CONFLICT 都要求
+/// 冲突列存在唯一约束，否则永远不会触发 UPDATE，导致数据重复。
+pub async fn validate_upsert_keys(
+    pool: &RdbmsPool,
+    table: &str,
+    key_columns: &[String],
+) -> Result<()> {
+    if key_columns.is_empty() {
+        bail!("upsert 模式需要指定 key_columns");
+    }
+
+    let unique_columns = query_unique_columns(pool, table).await?;
+    if unique_columns.is_empty() {
+        bail!(
+            "目标表 '{}' 没有任何唯一索引或主键，无法执行 upsert。\n\
+             请为 key_columns {:?} 中的列创建 UNIQUE 索引，例如：\n\
+             ALTER TABLE {} ADD UNIQUE INDEX idx_upsert ({});",
+            table,
+            key_columns,
+            table,
+            key_columns.join(", ")
+        );
+    }
+
+    for kc in key_columns {
+        if !unique_columns.contains(kc) {
+            bail!(
+                "目标表 '{}' 的 key_column '{}' 没有唯一索引。\n\
+                 当前的唯一索引列: {:?}\n\
+                 请为该列创建 UNIQUE 索引，例如：\n\
+                 ALTER TABLE {} ADD UNIQUE INDEX idx_{} ({});",
+                table,
+                kc,
+                unique_columns,
+                table,
+                kc,
+                kc
+            );
+        }
+    }
+
+    Ok(())
+}
+
+/// 查询目标表上所有 UNIQUE 约束覆盖的列（含 PRIMARY KEY）
+async fn query_unique_columns(pool: &RdbmsPool, table: &str) -> Result<Vec<String>> {
+    match pool {
+        RdbmsPool::Mysql(p) => {
+            let sql = format!(
+                "SELECT DISTINCT kcu.COLUMN_NAME \
+                 FROM information_schema.TABLE_CONSTRAINTS tc \
+                 JOIN information_schema.KEY_COLUMN_USAGE kcu \
+                     ON tc.CONSTRAINT_NAME = kcu.CONSTRAINT_NAME \
+                     AND tc.TABLE_SCHEMA = kcu.TABLE_SCHEMA \
+                     AND tc.TABLE_NAME = kcu.TABLE_NAME \
+                 WHERE tc.TABLE_SCHEMA = DATABASE() \
+                     AND tc.TABLE_NAME = '{}' \
+                     AND tc.CONSTRAINT_TYPE IN ('PRIMARY KEY', 'UNIQUE')",
+                table
+            );
+            let rows = sqlx::query(&sql).fetch_all(p).await?;
+            use sqlx::Row;
+            Ok(rows.iter().filter_map(|r| r.try_get("COLUMN_NAME").ok()).collect())
+        }
+        RdbmsPool::Postgres(p) => {
+            let sql = format!(
+                "SELECT DISTINCT kcu.column_name \
+                 FROM information_schema.table_constraints tc \
+                 JOIN information_schema.key_column_usage kcu \
+                     ON tc.constraint_name = kcu.constraint_name \
+                     AND tc.table_schema = kcu.table_schema \
+                 WHERE tc.table_schema = 'public' \
+                     AND tc.table_name = '{}' \
+                     AND tc.constraint_type IN ('PRIMARY KEY', 'UNIQUE')",
+                table
+            );
+            let rows = sqlx::query(&sql).fetch_all(p).await?;
+            use sqlx::Row;
+            Ok(rows.iter().filter_map(|r| r.try_get("column_name").ok()).collect())
+        }
+    }
+}

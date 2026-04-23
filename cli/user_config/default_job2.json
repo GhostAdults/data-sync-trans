@@ -14,9 +14,7 @@
           "username": "root",
           "password": "123456",
           "table": "user_x",
-          "key_columns": [
-            "id"
-          ],
+          "key_columns": ["id"],
           "max_connections": 20,
           "acquire_timeout_secs": 30,
           "use_transaction": true
@@ -37,9 +35,7 @@
         "username": "root",
         "password": "123456",
         "table": "user_w",
-        "key_columns": [
-          "userAccount"
-        ],
+        "key_columns": ["id"],
         "max_connections": 20,
         "acquire_timeout_secs": 30,
         "use_transaction": true
