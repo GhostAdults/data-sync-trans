@@ -261,7 +261,7 @@ impl DataReaderJob for BinlogReader {
     async fn split(&self, _reader_threads: usize) -> Result<SplitReaderResult> {
         Ok(SplitReaderResult {
             total_records: 0, // CDC 流式消费，无法预知总量��触发 spinner 模式
-            stream_mode: StreamMode::Infinite,
+            stream_mode: StreamMode::Streaming,
             tasks: vec![ReadTask {
                 task_id: 0,
                 conn: JsonValue::Null,

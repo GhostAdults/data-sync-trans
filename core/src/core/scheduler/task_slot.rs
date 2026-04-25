@@ -1,6 +1,5 @@
 use crate::core::scheduler::cmd::{Schedule, TaskDoneResult, TaskInfo, TaskStats};
 use std::time::{Instant, SystemTime};
-use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
 /// 任务运行阶段
@@ -28,7 +27,6 @@ pub struct TaskSlot {
     pub job_id: String,
     pub phase: TaskPhase,
     pub cancel_token: CancellationToken,
-    pub handle: JoinHandle<()>,
     pub started_at: Instant,
     pub is_cdc: bool,
     pub schedule: Option<Schedule>,
@@ -40,13 +38,11 @@ impl TaskSlot {
         is_cdc: bool,
         schedule: Option<Schedule>,
         cancel_token: CancellationToken,
-        handle: JoinHandle<()>,
     ) -> Self {
         Self {
             job_id,
             phase: TaskPhase::Running,
             cancel_token,
-            handle,
             started_at: Instant::now(),
             is_cdc,
             schedule,

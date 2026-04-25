@@ -25,16 +25,16 @@ use std::sync::{Arc, OnceLock, RwLock};
 /// Reader 返回的原始数据流
 pub type JsonStream = Pin<Box<dyn Stream<Item = Result<JsonValue>> + Send + 'static>>;
 
-/// Stream 模式：Finite(全量，有终点) / Infinite(CDC，永不结束)
+/// Stream 模式：Batch(批量，有终点) / Streaming(流式，持续监听)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StreamMode {
-    Finite,
-    Infinite,
+    Batch,
+    Streaming,
 }
 
 impl Default for StreamMode {
     fn default() -> Self {
-        StreamMode::Finite
+        StreamMode::Batch
     }
 }
 
@@ -52,7 +52,6 @@ pub struct ReadTask {
 pub struct SplitReaderResult {
     pub total_records: usize,
     pub tasks: Vec<ReadTask>,
-    /// 声明 stream 模式：Finite(全量) / Infinite(CDC)
     pub stream_mode: StreamMode,
 }
 

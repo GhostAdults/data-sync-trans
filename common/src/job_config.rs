@@ -24,14 +24,14 @@ pub struct JobConfig {
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum SyncMode {
-    Full,
-    Cdc,
-    Hybrid,
+    Fullsnapshot,
+    Incremental,
+    Mix,
 }
 
 impl Default for SyncMode {
     fn default() -> Self {
-        SyncMode::Full
+        SyncMode::Fullsnapshot
     }
 }
 

@@ -284,8 +284,8 @@ async fn dispatch_runner(
     cancel_token: CancellationToken,
 ) -> Result<RunResult> {
     let runner: Box<dyn TaskRunner> = match stream_mode {
-        StreamMode::Finite => Box::new(BatchRunner::new(config)),
-        StreamMode::Infinite => Box::new(CdcRunner::new(config)),
+        StreamMode::Batch => Box::new(BatchRunner::new(config)),
+        StreamMode::Streaming => Box::new(CdcRunner::new(config)),
     };
     runner.run(reader, writer, job_config, cancel_token).await
 }
@@ -313,8 +313,8 @@ pub async fn run_sync(config: Arc<JobConfig>, cancel_token: CancellationToken) -
     info!(
         "[run_sync] {} 模式, {} 个任务, 总记录数 {}",
         match stream_mode {
-            StreamMode::Finite => "Batch",
-            StreamMode::Infinite => "Cdc",
+            StreamMode::Batch => "Batch",
+            StreamMode::Streaming => "Streaming",
         },
         split_result.tasks.len(),
         split_result.total_records

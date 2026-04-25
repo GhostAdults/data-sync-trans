@@ -1,5 +1,6 @@
-use axum::extract::Query;
+use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
+use axum::routing::{get, post};
 use axum::Json;
 use axum::Router;
 use serde::Deserialize;
@@ -11,9 +12,8 @@ use std::sync::Arc;
 
 use crate::core::axum_api::{h_describe, h_gen_mapping, h_list_tables, h_sync};
 use crate::core::runner::{run_sync, RunResult};
+use crate::core::scheduler::{SchedulerControlHandle, SchedulerError, SchedulerResponse};
 use anyhow::Result;
-use tokio_util::sync::CancellationToken;
-use axum::routing::{get, post};
 use relus_common::app_config::value::ConfigValue;
 use relus_common::data_source_config::{ApiConfig, DbConfig};
 use relus_common::job_config::{JobConfig, MappingConfig};
@@ -23,6 +23,7 @@ use relus_common::{CreateConfigReq, UpdateConfigReq};
 use relus_connector_rdbms::pool::{get_pool_from_query, RdbmsPool};
 use sqlx::{MySqlPool, PgPool, Row};
 use tokio::net::TcpListener;
+use tokio_util::sync::CancellationToken;
 
 use std::collections::HashMap;
 
@@ -44,7 +45,27 @@ pub struct SyncReq {
     pub mapping: Option<MappingConfig>,
 }
 
-pub async fn serve_http(host: String, port: u16) -> anyhow::Result<()> {
+#[derive(Clone)]
+pub struct AppState {
+    pub scheduler: Option<SchedulerControlHandle>,
+}
+
+#[derive(Deserialize)]
+pub struct SchedulerTasksQuery {
+    pub job_id: Option<String>,
+}
+
+#[derive(Deserialize)]
+pub struct SchedulerSubmitReq {
+    pub path: String,
+}
+
+pub async fn serve_http(
+    host: String,
+    port: u16,
+    scheduler: Option<SchedulerControlHandle>,
+) -> anyhow::Result<()> {
+    let app_state = AppState { scheduler };
     let app = Router::new()
         .route(
             "/tables",
@@ -61,7 +82,15 @@ pub async fn serve_http(host: String, port: u16) -> anyhow::Result<()> {
         .route(
             "/sync",
             post(|body: Json<SyncReq>| async move { h_sync(body).await }),
-        );
+        )
+        .route("/scheduler/tasks", get(get_scheduler_tasks))
+        .route("/scheduler/tasks", post(post_scheduler_task))
+        .route(
+            "/scheduler/tasks/:job_id/cancel",
+            post(post_scheduler_cancel),
+        )
+        .route("/scheduler/shutdown", post(post_scheduler_shutdown))
+        .with_state(app_state);
     let addr = format!("{}:{}", host, port);
     let listener = TcpListener::bind(&addr).await?;
     axum::serve(listener, app).await?;
@@ -148,6 +177,118 @@ pub async fn sync(cfg: JobConfig) -> Result<RunResult> {
 /// CLI 同步
 pub async fn sync_cli(cfg: JobConfig) -> Result<RunResult> {
     run_sync(Arc::new(cfg), CancellationToken::new()).await
+}
+
+fn scheduler_unavailable() -> (StatusCode, Json<ApiResp<Value>>) {
+    (
+        StatusCode::SERVICE_UNAVAILABLE,
+        Json(ApiResp {
+            ok: false,
+            data: None,
+            error: Some("Scheduler control plane is unavailable".to_string()),
+        }),
+    )
+}
+
+fn scheduler_success(response: SchedulerResponse) -> (StatusCode, Json<ApiResp<Value>>) {
+    let data = match serde_json::to_value(response) {
+        Ok(value) => Some(value),
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ApiResp {
+                    ok: false,
+                    data: None,
+                    error: Some(e.to_string()),
+                }),
+            )
+        }
+    };
+
+    (
+        StatusCode::OK,
+        Json(ApiResp {
+            ok: true,
+            data,
+            error: None,
+        }),
+    )
+}
+
+fn scheduler_failure(error: SchedulerError) -> (StatusCode, Json<ApiResp<Value>>) {
+    let status = match error {
+        SchedulerError::JobNotFound { .. } => StatusCode::NOT_FOUND,
+        SchedulerError::JobAlreadyExists { .. }
+        | SchedulerError::InvalidConfig { .. }
+        | SchedulerError::MaxConcurrencyReached { .. } => StatusCode::BAD_REQUEST,
+        SchedulerError::SchedulerUnavailable => StatusCode::SERVICE_UNAVAILABLE,
+        SchedulerError::Internal { .. } => StatusCode::INTERNAL_SERVER_ERROR,
+    };
+    let message = error.message();
+
+    (
+        status,
+        Json(ApiResp {
+            ok: false,
+            data: None,
+            error: Some(message),
+        }),
+    )
+}
+
+pub async fn get_scheduler_tasks(
+    State(state): State<AppState>,
+    Query(query): Query<SchedulerTasksQuery>,
+) -> (StatusCode, Json<ApiResp<Value>>) {
+    let Some(handle) = state.scheduler else {
+        return scheduler_unavailable();
+    };
+
+    match handle.query_tasks(query.job_id).await {
+        Ok(response) => scheduler_success(response),
+        Err(error) => scheduler_failure(error),
+    }
+}
+
+pub async fn post_scheduler_task(
+    State(state): State<AppState>,
+    Json(body): Json<SchedulerSubmitReq>,
+) -> (StatusCode, Json<ApiResp<Value>>) {
+    let Some(handle) = state.scheduler else {
+        return scheduler_unavailable();
+    };
+
+    match handle.submit_task(body.path.into()).await {
+        Ok(response) => scheduler_success(response),
+        Err(error) => scheduler_failure(error),
+    }
+}
+
+pub async fn post_scheduler_cancel(
+    State(state): State<AppState>,
+    Path(job_id): Path<String>,
+) -> (StatusCode, Json<ApiResp<Value>>) {
+    let Some(handle) = state.scheduler else {
+        return scheduler_unavailable();
+    };
+
+    match handle.cancel_task(job_id).await {
+        Ok(response) => scheduler_success(response),
+        Err(error) => scheduler_failure(error),
+    }
+}
+
+pub async fn post_scheduler_shutdown(
+    State(state): State<AppState>,
+) -> (StatusCode, Json<ApiResp<Value>>) {
+    let Some(handle) = state.scheduler else {
+        return scheduler_unavailable();
+    };
+
+    match handle.shutdown().await {
+        Ok(response) => scheduler_success(response),
+        Err(error) => scheduler_failure(error),
+    }
 }
 
 pub async fn list_tables(q: TablesQuery) -> (StatusCode, Json<ApiResp<Vec<String>>>) {
@@ -566,5 +707,70 @@ fn apply_default_task_values(map: &mut HashMap<String, ConfigValue>) {
         api_map
             .entry("headers".to_string())
             .or_insert_with(|| ConfigValue::Object(HashMap::new()));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::extract::{Path, Query, State};
+    use tokio::sync::mpsc;
+
+    use crate::core::scheduler::{SchedulerCommand, SchedulerControlHandle, SchedulerResponse};
+
+    #[tokio::test]
+    async fn scheduler_tasks_handler_returns_api_resp() {
+        let (tx, mut rx) = mpsc::channel(1);
+        let handle = SchedulerControlHandle::from_sender(tx);
+        let state = AppState {
+            scheduler: Some(handle),
+        };
+
+        let worker = tokio::spawn(async move {
+            if let Some(SchedulerCommand::QueryTasks { reply, .. }) = rx.recv().await {
+                let _ = reply.send(Ok(SchedulerResponse::Tasks {
+                    tasks: Vec::new(),
+                    repl_alive: false,
+                }));
+            }
+        });
+
+        let (status, Json(resp)) = get_scheduler_tasks(
+            State(state),
+            Query(SchedulerTasksQuery { job_id: None }),
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert!(resp.ok);
+        let data = resp.data.expect("scheduler tasks data");
+        assert_eq!(data["Tasks"]["tasks"], serde_json::json!([]));
+        assert_eq!(data["Tasks"]["repl_alive"], serde_json::json!(false));
+
+        let _ = worker.await;
+    }
+
+    #[tokio::test]
+    async fn scheduler_cancel_handler_maps_not_found() {
+        let (tx, mut rx) = mpsc::channel(1);
+        let handle = SchedulerControlHandle::from_sender(tx);
+        let state = AppState {
+            scheduler: Some(handle),
+        };
+
+        let worker = tokio::spawn(async move {
+            if let Some(SchedulerCommand::CancelTask { reply, job_id }) = rx.recv().await {
+                let _ = reply.send(Err(SchedulerError::JobNotFound { job_id }));
+            }
+        });
+
+        let (status, Json(resp)) =
+            post_scheduler_cancel(State(state), Path("missing".to_string())).await;
+
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert!(!resp.ok);
+        assert_eq!(resp.error.as_deref(), Some("Job 'missing' not found."));
+
+        let _ = worker.await;
     }
 }

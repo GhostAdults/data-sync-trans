@@ -41,7 +41,7 @@ impl DataReaderJob for ApiReader {
     async fn split(&self, _reader_threads: usize) -> Result<SplitReaderResult> {
         Ok(SplitReaderResult {
             total_records: 0,
-            stream_mode: StreamMode::Finite,
+            stream_mode: StreamMode::Batch,
             tasks: vec![ReadTask {
                 task_id: 0,
                 conn: JsonValue::Null,

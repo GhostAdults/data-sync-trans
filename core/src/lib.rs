@@ -149,13 +149,16 @@ pub fn read_config(path: PathBuf) -> Result<JobConfig> {
 pub fn run_serve(host: String, port: u16) -> Result<()> {
     init_system_config();
     let rt = tokio::runtime::Runtime::new()?;
-    rt.block_on(async { core::serve::serve_http(host, port).await })?;
+    rt.block_on(async { core::serve::serve_http(host, port, None).await })?;
     Ok(())
 }
 
 
 /// 启动 TaskScheduler 常驻运行
-pub fn run_scheduler(configs: Vec<(String, relus_common::job_config::JobConfig)>) -> Result<()> {
+pub fn run_scheduler(
+    configs: Vec<(String, relus_common::job_config::JobConfig)>,
+    enable_repl: bool,
+) -> Result<()> {
     let rt = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(4)
         .enable_all()
@@ -168,6 +171,7 @@ pub fn run_scheduler(configs: Vec<(String, relus_common::job_config::JobConfig)>
             .unwrap_or_else(|| PathBuf::from("checkpoints.redb"));
 
         let mut scheduler = crate::core::scheduler::TaskScheduler::new(checkpoint_dir)?;
+        let scheduler_handle = scheduler.control_handle();
 
         for (job_id, config) in configs {
             let schedule = config
@@ -185,9 +189,22 @@ pub fn run_scheduler(configs: Vec<(String, relus_common::job_config::JobConfig)>
             }
         }
 
-        scheduler.start_repl();
+        if enable_repl {
+            scheduler.start_repl();
+        } else {
+            tracing::info!("[Run] REPL disabled by --no-repl");
+        }
+
+        let server = tokio::spawn(crate::core::serve::serve_http(
+            "127.0.0.1".to_string(),
+            30001,
+            Some(scheduler_handle),
+        ));
+        tracing::info!("[Run] scheduler control API listening on 127.0.0.1:30001");
         tracing::info!("[Run] scheduler starting, waiting for tasks...");
         scheduler.run().await;
+        server.abort();
+        let _ = server.await;
         tracing::info!("[Run] scheduler stopped");
 
         Ok::<(), anyhow::Error>(())

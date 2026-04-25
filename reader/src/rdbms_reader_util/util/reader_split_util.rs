@@ -21,7 +21,7 @@ pub async fn do_split(rdbms_job: &RdbmsJob, advice_number: usize) -> SplitReader
             warn!("获取数据库连接池失败: {:?}", e);
             return SplitReaderResult {
                 total_records: 0,
-                stream_mode: StreamMode::Finite,
+                stream_mode: StreamMode::Batch,
                 tasks: vec![],
             };
         }
@@ -137,7 +137,7 @@ pub async fn do_split(rdbms_job: &RdbmsJob, advice_number: usize) -> SplitReader
     SplitReaderResult {
         total_records,
         tasks,
-        stream_mode: StreamMode::Finite,
+        stream_mode: StreamMode::Batch,
     }
 }
 

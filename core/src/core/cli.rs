@@ -83,6 +83,9 @@ pub enum Commands {
         /// 指定配置文件目录，加载目录下所有 *.json
         #[arg(short, long)]
         jobs_dir: Option<PathBuf>,
+        /// 禁用交互式 REPL，仅保留 API 控制面
+        #[arg(long, default_value_t = false)]
+        no_repl: bool,
     },
 }
 
@@ -113,7 +116,7 @@ pub fn run_cli(cmd: Commands) {
                         Ok(result) => match result.status {
                             RunStatus::Shutdown => {
                                 println!(
-                                    "CDC 任务已停止\n 已读出 {} records\n 已写入 {} records\n 耗时 {:.2}s",
+                                    "Stream 任务已停止\n 已读出 {} records\n 已写入 {} records\n 耗时 {:.2}s",
                                     result.stats.records_read,
                                     result.stats.records_written,
                                     result.stats.elapsed_secs
@@ -281,9 +284,13 @@ pub fn run_cli(cmd: Commands) {
                 println!("Server running on {}:{}", host, port);
             }
         }
-        Commands::Run { config, jobs_dir } => {
+        Commands::Run {
+            config,
+            jobs_dir,
+            no_repl,
+        } => {
             let configs = collect_job_configs(config, jobs_dir);
-            if let Err(e) = run_scheduler(configs) {
+            if let Err(e) = run_scheduler(configs, !no_repl) {
                 eprintln!("Run error: {}", e);
             }
         }

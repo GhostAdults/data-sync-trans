@@ -1,13 +1,18 @@
 use super::checkpoint::CheckpointStore;
 use super::cmd::{Schedule, TaskDoneEvent, TaskDoneResult, TaskInfo};
+use super::control::{
+    load_job_config_from_path, SchedulerCommand, SchedulerControlHandle, SchedulerError,
+    SchedulerResponse,
+};
 use super::cron::CronTracker;
-use super::repl::{ReplCommand, ReplLoop};
+use super::repl::ReplLoop;
 use super::task_slot::TaskSlot;
 use crate::core::runner::{run_sync, RunStatus};
 use anyhow::Result;
 use relus_common::job_config::{JobConfig, SyncMode};
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
@@ -20,13 +25,14 @@ pub struct TaskScheduler {
     configs: HashMap<String, (Arc<JobConfig>, bool)>,
     done_rx: mpsc::Receiver<TaskDoneEvent>,
     done_tx: mpsc::Sender<TaskDoneEvent>,
-    cmd_rx: mpsc::Receiver<ReplCommand>,
-    cmd_tx: mpsc::Sender<ReplCommand>,
+    cmd_rx: mpsc::Receiver<SchedulerCommand>,
+    cmd_tx: mpsc::Sender<SchedulerCommand>,
     cron_tracker: CronTracker,
     #[allow(dead_code)]
     checkpoint: CheckpointStore,
     shutdown_token: CancellationToken,
     repl_cancel: CancellationToken,
+    repl_alive: Arc<AtomicBool>,
 }
 
 impl TaskScheduler {
@@ -45,14 +51,22 @@ impl TaskScheduler {
             checkpoint,
             shutdown_token: CancellationToken::new(),
             repl_cancel: CancellationToken::new(),
+            repl_alive: Arc::new(AtomicBool::new(false)),
         })
+    }
+
+    pub fn control_handle(&self) -> SchedulerControlHandle {
+        SchedulerControlHandle::new(self.cmd_tx.clone())
     }
 
     /// 启动 REPL 交互循环（在独立线程中运行，不阻塞 tokio runtime）
     pub fn start_repl(&self) {
-        let repl = Arc::new(ReplLoop::new(self.cmd_tx.clone(), self.repl_cancel.clone()));
+        let repl = Arc::new(ReplLoop::new(self.control_handle(), self.repl_cancel.clone()));
+        let repl_alive = self.repl_alive.clone();
+        repl_alive.store(true, Ordering::Relaxed);
         std::thread::spawn(move || {
             repl.run();
+            repl_alive.store(false, Ordering::Relaxed);
         });
         info!("[TaskScheduler] REPL started");
     }
@@ -87,10 +101,10 @@ impl TaskScheduler {
                     }
                 }
 
-                // REPL 命令
+                // Scheduler 控制命令
                 cmd = self.cmd_rx.recv() => {
                     if let Some(cmd) = cmd {
-                        if self.handle_repl_cmd(cmd).await {
+                        if self.handle_scheduler_command(cmd).await {
                             break;
                         }
                     }
@@ -108,121 +122,66 @@ impl TaskScheduler {
         info!("[TaskScheduler] stopped");
     }
 
-    /// 处理 REPL 命令，返回 true 表示应该退出循环
-    async fn handle_repl_cmd(&mut self, cmd: ReplCommand) -> bool {
+    async fn handle_scheduler_command(&mut self, cmd: SchedulerCommand) -> bool {
         match cmd {
-            ReplCommand::Status { job_id } => {
-                self.cmd_status(job_id);
+            SchedulerCommand::QueryTasks { job_id, reply } => {
+                let result = Ok(SchedulerResponse::Tasks {
+                    tasks: self.filter_tasks(job_id),
+                    repl_alive: self.repl_alive.load(Ordering::Relaxed),
+                });
+                let _ = reply.send(result);
+                false
             }
-            ReplCommand::Submit { path } => {
-                self.cmd_submit(&path);
+            SchedulerCommand::SubmitTask {
+                job_id: _,
+                path,
+                reply,
+            } => {
+                let result = match load_job_config_from_path(&path) {
+                    Ok((job_id, config, schedule)) => self
+                        .submit_task(job_id.clone(), config, schedule)
+                        .map(|id| SchedulerResponse::TaskSubmitted { job_id: id })
+                        .map_err(map_submit_error),
+                    Err(err) => Err(err),
+                };
+                let _ = reply.send(result);
+                false
             }
-            ReplCommand::Cancel { job_id } => {
-                self.cmd_cancel(&job_id);
+            SchedulerCommand::CancelTask { job_id, reply } => {
+                let result = self
+                    .cancel_task(&job_id)
+                    .map(|()| SchedulerResponse::TaskCancelled { job_id })
+                    .map_err(map_submit_error);
+                let _ = reply.send(result);
+                false
             }
-            ReplCommand::Exit => {
+            SchedulerCommand::Shutdown { reply } => {
                 self.repl_cancel.cancel();
                 info!("[TaskScheduler] exit command received, shutting down");
                 self.graceful_shutdown().await;
-                return true;
-            }
-            ReplCommand::Unknown(input) => {
-                if input.starts_with("Usage:") {
-                    println!("{}", input);
-                } else {
-                    println!("Unknown command: {}. Type 'exit' to quit.", input);
-                }
+                let _ = reply.send(Ok(SchedulerResponse::ShutdownRequested));
+                true
             }
         }
-        false
     }
 
-    /// status 命令：格式化表格输出任务状态
-    fn cmd_status(&self, job_id: Option<String>) {
+    fn filter_tasks(&self, job_id: Option<String>) -> Vec<TaskInfo> {
         let tasks = self.list_tasks();
-        let filtered: Vec<&TaskInfo> = match &job_id {
-            Some(id) => tasks.iter().filter(|t| &t.job_id == id).collect(),
-            None => tasks.iter().collect(),
-        };
-
-        if filtered.is_empty() {
-            match job_id {
-                Some(id) => println!("Job '{}' not found.", id),
-                None => println!("No tasks."),
-            }
-            return;
-        }
-
-        println!(
-            "{:<20} {:<12} {:<6} {:>12} {:>12} {:>10}",
-            "job_id", "phase", "cdc", "read", "written", "elapsed"
-        );
-        println!("{}", "-".repeat(74));
-        for t in &filtered {
-            let (read, written, elapsed) = match &t.stats {
-                Some(s) => (
-                    s.records_read.to_string(),
-                    s.records_written.to_string(),
-                    format!("{:.1}s", s.elapsed_secs),
-                ),
-                None => ("-".to_string(), "-".to_string(), "-".to_string()),
-            };
-            println!(
-                "{:<20} {:<12} {:<6} {:>12} {:>12} {:>10}",
-                t.job_id, t.phase, t.is_cdc, read, written, elapsed
-            );
+        match job_id {
+            Some(id) => tasks.into_iter().filter(|task| task.job_id == id).collect(),
+            None => tasks,
         }
     }
 
-    /// submit 命令：加载配置并提交任务
-    fn cmd_submit(&mut self, path: &str) {
-        let path = PathBuf::from(path);
-        let data = match std::fs::read_to_string(&path) {
-            Ok(d) => d,
-            Err(e) => {
-                println!("File not found: {} ({})", path.display(), e);
-                return;
-            }
-        };
-
-        let config: JobConfig = match serde_json::from_str(&data) {
-            Ok(c) => c,
-            Err(e) => {
-                println!("Parse failed: {}", e);
-                return;
-            }
-        };
-
-        let job_id = config
-            .job_id
-            .clone()
-            .or_else(|| {
-                path.file_stem()
-                    .and_then(|s| s.to_str())
-                    .map(|s| s.to_string())
-            })
-            .unwrap_or_else(|| "unknown".to_string());
-
-        let schedule = config
-            .schedule
-            .as_ref()
-            .map(|s| Schedule::from_cli_str(&format!("{:?}", s)))
-            .unwrap_or_default();
-
-        match self.submit_task(job_id.clone(), Arc::new(config), schedule) {
-            Ok(id) => println!("Job '{}' submitted.", id),
-            Err(e) => println!("Submit failed: {}", e),
-        }
-    }
-
-    /// cancel 命令：取消运行中的任务
-    fn cmd_cancel(&mut self, job_id: &str) {
+    fn cancel_task(&mut self, job_id: &str) -> Result<()> {
         match self.slots.get(job_id) {
             Some(slot) => {
                 slot.cancel_token.cancel();
-                println!("Job '{}' cancel signal sent.", job_id);
+                Ok(())
             }
-            None => println!("Job '{}' not found.", job_id),
+            None => Err(anyhow::Error::new(SchedulerError::JobNotFound {
+                job_id: job_id.to_string(),
+            })),
         }
     }
 
@@ -234,7 +193,9 @@ impl TaskScheduler {
         schedule: Schedule,
     ) -> Result<String> {
         if self.slots.contains_key(&job_id) || self.cron_tracker.get_schedule(&job_id).is_some() {
-            anyhow::bail!("job '{}' already exists", job_id);
+            return Err(anyhow::Error::new(SchedulerError::JobAlreadyExists {
+                job_id: job_id.clone(),
+            }));
         }
 
         let running = self
@@ -243,10 +204,13 @@ impl TaskScheduler {
             .filter(|s| matches!(s.phase, super::task_slot::TaskPhase::Running))
             .count();
         if running >= MAX_CONCURRENCY {
-            anyhow::bail!("max concurrency reached ({}/{})", running, MAX_CONCURRENCY);
+            return Err(anyhow::Error::new(SchedulerError::MaxConcurrencyReached {
+                running,
+                limit: MAX_CONCURRENCY,
+            }));
         }
 
-        let is_cdc = config.sync_mode == Some(SyncMode::Cdc);
+        let is_cdc = config.sync_mode == Some(SyncMode::Incremental);
         self.configs
             .insert(job_id.clone(), (config.clone(), is_cdc));
 
@@ -295,7 +259,7 @@ impl TaskScheduler {
         let id = job_id.clone();
         let token_clone = cancel_token.clone();
 
-        let handle = tokio::spawn(async move {
+        tokio::spawn(async move {
             let result = run_sync(config, token_clone).await;
             let done_result = match result {
                 Ok(r) => match r.status {
@@ -320,7 +284,7 @@ impl TaskScheduler {
                 .await;
         });
 
-        let slot = TaskSlot::new(job_id.clone(), is_cdc, None, cancel_token, handle);
+        let slot = TaskSlot::new(job_id.clone(), is_cdc, None, cancel_token);
         self.slots.insert(job_id.clone(), slot);
         info!("[TaskScheduler] job '{}' spawned (cdc={})", job_id, is_cdc);
     }
@@ -354,54 +318,8 @@ impl TaskScheduler {
                 result_summary
             );
 
-            // Batch 任务完成 → 终端打印结果摘要（格式与 sync 命令一致）
-            if was_running && !is_cdc {
-                match &slot.phase {
-                    super::task_slot::TaskPhase::Completed(stats) => {
-                        let tp = if stats.elapsed_secs > 0.0 {
-                            stats.records_written as f64 / stats.elapsed_secs
-                        } else {
-                            0.0
-                        };
-                        println!(
-                            "[{}] complete:\n 任务读出 {} records\n 任务写入 {} records\n 耗时 {:.2}s\n TP {:.0} rec/s",
-                            job_id, stats.records_read, stats.records_written, stats.elapsed_secs, tp
-                        );
-                    }
-                    super::task_slot::TaskPhase::Failed(msg) => {
-                        println!("[{}] failed: {}", job_id, msg);
-                    }
-                    super::task_slot::TaskPhase::Cancelled => {
-                        println!("[{}] cancelled", job_id);
-                    }
-                    _ => {}
-                }
-
-                // Cron Batch 完成后重新注册
-                if let Some(schedule) = self.cron_tracker.get_schedule(job_id).cloned() {
-                    if matches!(schedule, Schedule::Cron(_)) {
-                        self.cron_tracker.register(job_id.clone(), schedule);
-                    }
-                }
-            }
-
-            // CDC 任务退出 → 终端打印
-            if was_running && is_cdc {
-                match &slot.phase {
-                    super::task_slot::TaskPhase::Completed(stats) => {
-                        println!(
-                            "[{}] CDC 任务已停止\n 已读出 {} records\n 已写入 {} records\n 耗时 {:.2}s",
-                            job_id, stats.records_read, stats.records_written, stats.elapsed_secs
-                        );
-                    }
-                    super::task_slot::TaskPhase::Failed(msg) => {
-                        println!("[{}] CDC 任务异常退出: {}", job_id, msg);
-                    }
-                    super::task_slot::TaskPhase::Cancelled => {
-                        println!("[{}] CDC 任务已停止", job_id);
-                    }
-                    _ => {}
-                }
+            if was_running {
+                print_task_done(job_id, is_cdc, &slot.phase);
             }
         }
     }
@@ -472,5 +390,70 @@ impl TaskScheduler {
             }
         }
         tasks
+    }
+}
+
+fn map_submit_error(error: anyhow::Error) -> SchedulerError {
+    if let Some(error) = error.downcast_ref::<SchedulerError>() {
+        return error.clone();
+    }
+
+    let message = error.to_string();
+    if let Some(job_id) = extract_job_id(&message, "already exists") {
+        return SchedulerError::JobAlreadyExists { job_id };
+    }
+    if let Some(job_id) = extract_job_id(&message, "not found") {
+        return SchedulerError::JobNotFound { job_id };
+    }
+    SchedulerError::Internal { message }
+}
+
+fn extract_job_id(message: &str, suffix: &str) -> Option<String> {
+    let prefix = "job '";
+    let rest = message.strip_prefix(prefix)?;
+    let (job_id, tail) = rest.split_once('"')?;
+    if tail.contains(suffix) {
+        Some(job_id.to_string())
+    } else {
+        None
+    }
+}
+
+/// 终端打印任务完成信息
+fn print_task_done(job_id: &str, is_cdc: bool, phase: &super::task_slot::TaskPhase) {
+    match phase {
+        super::task_slot::TaskPhase::Completed(stats) => {
+            let tp = if stats.elapsed_secs > 0.0 {
+                stats.records_written as f64 / stats.elapsed_secs
+            } else {
+                0.0
+            };
+            if is_cdc {
+                println!(
+                    "[{}] CDC 任务已停止\n 已读出 {} records\n 已写入 {} records\n 耗时 {:.2}s",
+                    job_id, stats.records_read, stats.records_written, stats.elapsed_secs
+                );
+            } else {
+                println!(
+                    "[{}] complete:\n 任务读出 {} records\n 任务写入 {} records\n 耗时 {:.2}s\n TP {:.0} rec/s",
+                    job_id, stats.records_read, stats.records_written, stats.elapsed_secs, tp
+                );
+            }
+        }
+        super::task_slot::TaskPhase::Failed(msg) => {
+            if is_cdc {
+                println!("[{}] CDC 任务异常退出: {}", job_id, msg);
+            } else {
+                println!("[{}] failed: {}", job_id, msg);
+            }
+        }
+        super::task_slot::TaskPhase::Cancelled => {
+            if is_cdc {
+                println!("[{}] CDC 任务已停止", job_id);
+            } else {
+                println!("[{}] cancelled", job_id);
+            }
+        }
+        _ => {}
     }
 }
