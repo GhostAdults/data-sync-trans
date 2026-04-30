@@ -1,4 +1,8 @@
 {
+  "server": {
+    "host": "127.0.0.1",
+    "port": 30001
+  },
   "pipeline": {
     "reader_threads": 8,
     "buffer_size": 1000,

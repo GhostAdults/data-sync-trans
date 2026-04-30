@@ -2,6 +2,7 @@
 
 use crate::core::runner::RunStatus;
 use crate::core::serve::*;
+use crate::init_and_watch_config;
 use crate::run_scheduler;
 use crate::run_serve;
 use clap::{Parser, Subcommand};
@@ -19,7 +20,6 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
-use tokio::runtime::Runtime;
 
 #[derive(Parser)]
 #[command(name = "Relus CLI")]
@@ -83,136 +83,92 @@ pub enum Commands {
         /// 指定配置文件目录，加载目录下所有 *.json
         #[arg(short, long)]
         jobs_dir: Option<PathBuf>,
+        /// Scheduler HTTP 控制面监听地址；未指定时读取系统配置
+        #[arg(short = 'H', long)]
+        host: Option<String>,
+        /// Scheduler HTTP 控制面端口；未指定时读取系统配置
+        #[arg(short = 'p', long)]
+        port: Option<u16>,
         /// 禁用交互式 REPL，仅保留 API 控制面
         #[arg(long, default_value_t = false)]
         no_repl: bool,
     },
 }
 
-pub fn run_cli(cmd: Commands) {
+pub async fn run_cli(cmd: Commands) -> Result<()> {
     match cmd {
         Commands::TestApi { config } => {
-            let cfg = read_config(config).unwrap();
-            let api_config = cfg.source.parse_api_config().unwrap();
-            let v = fetch_json(&api_config).unwrap();
-            println!("{}", serde_json::to_string_pretty(&v).unwrap());
+            let cfg = read_job_config(&config)?;
+            let api_config = cfg.source.parse_api_config()?;
+            let v = fetch_json(&api_config)?;
+            println!("{}", serde_json::to_string_pretty(&v)?);
             let items = if let Some(p) = &api_config.items_json_path {
                 extract_by_path(&v, p).unwrap_or(&Value::Null).clone()
             } else {
                 v.clone()
             };
-            println!("{}", serde_json::to_string_pretty(&items).unwrap());
+            println!("{}", serde_json::to_string_pretty(&items)?);
         }
-        Commands::Sync { config } => match read_config(config) {
-            Ok(cfg) => {
-                // let rt = Runtime::new().unwrap();
-                let rt = tokio::runtime::Builder::new_multi_thread()
-                    .worker_threads(4)
-                    .enable_all()
-                    .build()
-                    .unwrap();
-                rt.block_on(async {
-                    match sync_cli(cfg).await {
-                        Ok(result) => match result.status {
-                            RunStatus::Shutdown => {
-                                println!(
-                                    "Stream 任务已停止\n 已读出 {} records\n 已写入 {} records\n 耗时 {:.2}s",
-                                    result.stats.records_read,
-                                    result.stats.records_written,
-                                    result.stats.elapsed_secs
-                                );
-                            }
-                            _ => {
-                                println!(
-                                    "complete:\n 任务读出 {} records\n 任务写入 {} records\n 耗时 {:.2}s\n TP {:.0} rec/s",
-                                    result.stats.records_read,
-                                    result.stats.records_written,
-                                    result.stats.elapsed_secs,
-                                    result.stats.throughput
-                                );
-                            }
-                        },
-                        Err(e) => {
-                            eprintln!("{}", e);
-                        }
-                    }
-                });
-            }
-            Err(e) => {
-                eprintln!("{}", e);
-            }
-        },
+        Commands::Sync { config } => {
+            init_and_watch_config();
+            let cfg = read_job_config(&config)?;
+            validate_job_identifiers(&cfg)?;
+            let result = sync_cli(cfg).await?;
+            print_run_result(&result);
+        }
         Commands::ListTables { db_url, db_type } => {
-            let kind = detect_db_kind(&db_url, db_type).unwrap();
-            let rt = Runtime::new().unwrap();
-            rt.block_on(async {
-                match kind {
-                    DbKind::Postgres => {
-                        let pool = PgPoolOptions::new()
-                            .max_connections(5)
-                            .connect(&db_url)
-                            .await
-                            .unwrap();
-                        let tabs = list_tables_postgres(&pool).await.unwrap();
-                        for t in tabs {
-                            println!("{}", t);
-                        }
-                    }
-                    DbKind::Mysql => {
-                        let pool = MySqlPoolOptions::new()
-                            .max_connections(5)
-                            .connect(&db_url)
-                            .await
-                            .unwrap();
-                        let tabs = list_tables_mysql(&pool).await.unwrap();
-                        for t in tabs {
-                            println!("{}", t);
-                        }
+            let kind = detect_db_kind(&db_url, db_type)?;
+            match kind {
+                DbKind::Postgres => {
+                    let pool = PgPoolOptions::new()
+                        .max_connections(5)
+                        .connect(&db_url)
+                        .await?;
+                    for table in list_tables_postgres(&pool).await? {
+                        println!("{}", table);
                     }
                 }
-            });
+                DbKind::Mysql => {
+                    let pool = MySqlPoolOptions::new()
+                        .max_connections(5)
+                        .connect(&db_url)
+                        .await?;
+                    for table in list_tables_mysql(&pool).await? {
+                        println!("{}", table);
+                    }
+                }
+            }
         }
         Commands::DescribeTable {
             db_url,
             db_type,
             table,
         } => {
-            let kind = detect_db_kind(&db_url, db_type).unwrap();
-            let rt = Runtime::new().unwrap();
-            rt.block_on(async {
-                match kind {
-                    DbKind::Postgres => {
-                        let pool =
-                            PgPoolOptions::new().max_connections(5).connect(&db_url).await.unwrap();
-                        let cols = fetch_columns_postgres(&pool, &table).await.unwrap();
-                        let v = cols
-                            .into_iter()
-                            .map(|c| {
-                                serde_json::json!({"name": c.name, "data_type": c.data_type, "nullable": c.is_nullable})
-                            })
-                            .collect::<Vec<_>>();
-                        println!(
-                            "{}",
-                            serde_json::to_string_pretty(&serde_json::json!(v)).unwrap()
-                        );
-                    }
-                    DbKind::Mysql => {
-                        let pool =
-                            MySqlPoolOptions::new().max_connections(5).connect(&db_url).await.unwrap();
-                        let cols = fetch_columns_mysql(&pool, &table).await.unwrap();
-                        let v = cols
-                            .into_iter()
-                            .map(|c| {
-                                serde_json::json!({"name": c.name, "data_type": c.data_type, "nullable": c.is_nullable})
-                            })
-                            .collect::<Vec<_>>();
-                        println!(
-                            "{}",
-                            serde_json::to_string_pretty(&serde_json::json!(v)).unwrap()
-                        );
-                    }
+            sanitize_identifier(&table)?;
+            let kind = detect_db_kind(&db_url, db_type)?;
+            let cols = match kind {
+                DbKind::Postgres => {
+                    let pool = PgPoolOptions::new()
+                        .max_connections(5)
+                        .connect(&db_url)
+                        .await?;
+                    fetch_columns_postgres(&pool, &table).await?
                 }
-            });
+                DbKind::Mysql => {
+                    let pool = MySqlPoolOptions::new()
+                        .max_connections(5)
+                        .connect(&db_url)
+                        .await?;
+                    fetch_columns_mysql(&pool, &table).await?
+                }
+            };
+            let v = cols
+                .into_iter()
+                .map(|c| {
+                    serde_json::json!({"name": c.name, "data_type": c.data_type, "nullable": c.is_nullable})
+                })
+                .collect::<Vec<_>>();
+            println!("{}", serde_json::to_string_pretty(&serde_json::json!(v))?);
         }
         Commands::GenMapping {
             db_url,
@@ -220,81 +176,65 @@ pub fn run_cli(cmd: Commands) {
             table,
             output,
         } => {
-            let kind = detect_db_kind(&db_url, db_type).unwrap();
-            let rt = Runtime::new().unwrap();
-            rt.block_on(async {
-                let (cols, key_cols) = match kind {
-                    DbKind::Postgres => {
-                        let pool = PgPoolOptions::new()
-                            .max_connections(5)
-                            .connect(&db_url)
-                            .await
-                            .unwrap();
-                        let cols = fetch_columns_postgres(&pool, &table).await.unwrap();
-                        (cols, Vec::<String>::new())
-                    }
-                    DbKind::Mysql => {
-                        let pool = MySqlPoolOptions::new()
-                            .max_connections(5)
-                            .connect(&db_url)
-                            .await
-                            .unwrap();
-                        let cols = fetch_columns_mysql(&pool, &table).await.unwrap();
-                        (cols, Vec::<String>::new())
-                    }
-                };
-                let mut mapping = BTreeMap::new();
-                let mut types = BTreeMap::new();
-                for c in cols {
-                    mapping.insert(c.name.clone(), "".to_string());
-                    types.insert(c.name.clone(), guess_type(&c.data_type).to_string());
+            sanitize_identifier(&table)?;
+            let kind = detect_db_kind(&db_url, db_type)?;
+            let cols = match kind {
+                DbKind::Postgres => {
+                    let pool = PgPoolOptions::new()
+                        .max_connections(5)
+                        .connect(&db_url)
+                        .await?;
+                    fetch_columns_postgres(&pool, &table).await?
                 }
-                let obj = serde_json::json!({
-                    "table": table,
-                    "key_columns": key_cols,
-                    "column_mapping": mapping,
-                    "column_types": types
-                });
-                fs::write(&output, serde_json::to_string_pretty(&obj).unwrap()).unwrap();
-                println!("written {}", output.display());
+                DbKind::Mysql => {
+                    let pool = MySqlPoolOptions::new()
+                        .max_connections(5)
+                        .connect(&db_url)
+                        .await?;
+                    fetch_columns_mysql(&pool, &table).await?
+                }
+            };
+            let mut mapping = BTreeMap::new();
+            let mut types = BTreeMap::new();
+            for c in cols {
+                mapping.insert(c.name.clone(), "".to_string());
+                types.insert(c.name.clone(), guess_type(&c.data_type).to_string());
+            }
+            let obj = serde_json::json!({
+                "table": table,
+                "key_columns": Vec::<String>::new(),
+                "column_mapping": mapping,
+                "column_types": types
             });
+            fs::write(&output, serde_json::to_string_pretty(&obj)?)
+                .with_context(|| format!("写入 mapping 文件失败: {}", output.display()))?;
+            println!("written {}", output.display());
         }
-        Commands::SyncWithMapping { config } => match read_config(config) {
-            Ok(cfg) => {
-                let rt = Runtime::new().unwrap();
-                rt.block_on(async {
-                    match sync_cli(cfg).await {
-                        Ok(result) => {
-                            println!("{}", serde_json::to_string_pretty(&result).unwrap());
-                        }
-                        Err(e) => {
-                            eprintln!("{}", e);
-                        }
-                    }
-                });
-            }
-            Err(e) => {
-                eprintln!("{}", e);
-            }
-        },
+        Commands::SyncWithMapping { config } => {
+            init_and_watch_config();
+            let cfg = read_job_config(&config)?;
+            validate_job_identifiers(&cfg)?;
+            let result = sync_cli(cfg).await?;
+            println!("{}", serde_json::to_string_pretty(&result)?);
+        }
         Commands::Serve { host, port } => {
-            if let Err(e) = run_serve(host.clone(), port.clone()) {
-                eprintln!("{}", e);
-            } else {
-                println!("Server running on {}:{}", host, port);
-            }
+            init_and_watch_config();
+            println!("Server listening on {}:{}", host, port);
+            run_serve(host, port).await?;
         }
         Commands::Run {
             config,
             jobs_dir,
+            host,
+            port,
             no_repl,
         } => {
-            let configs = collect_job_configs(config, jobs_dir);
-            if let Err(e) = run_scheduler(configs, !no_repl) {
-                eprintln!("Run error: {}", e);
-            }
+            init_and_watch_config();
+            let configs = collect_job_configs(config, jobs_dir)?;
+            run_scheduler(configs, !no_repl, host, port).await?;
         }
     }
+    Ok(())
 }
 
 fn sanitize_identifier(s: &str) -> Result<()> {
@@ -305,26 +245,60 @@ fn sanitize_identifier(s: &str) -> Result<()> {
     Ok(())
 }
 
-fn read_config(path: PathBuf) -> Result<JobConfig> {
-    let data = fs::read_to_string(&path)
+fn read_job_config(path: &PathBuf) -> Result<JobConfig> {
+    let data = fs::read_to_string(path)
         .with_context(|| format!("读取配置文件失败: {}", path.display()))?;
     let cfg: JobConfig = serde_json::from_str(&data)
         .map_err(|e| anyhow::anyhow!("配置文件解析失败: {} - 错误: {}", path.display(), e))?;
-    let db_config = cfg.source.parse_database_config()?;
-    if &db_config.table != "" {
-        sanitize_identifier(&db_config.table)?;
-    } else {
-        bail!("数据库配置必须包含 table 字段");
+    Ok(cfg)
+}
+
+fn validate_job_identifiers(cfg: &JobConfig) -> Result<()> {
+    if cfg.source.source_type == "database" {
+        let db_config = cfg.source.parse_database_config()?;
+        validate_database_identifiers(&db_config)?;
+    }
+    if cfg.target.source_type == "database" {
+        let db_config = cfg.target.parse_database_config()?;
+        validate_database_identifiers(&db_config)?;
     }
     for k in cfg.column_mapping.keys() {
         sanitize_identifier(k)?;
     }
+    Ok(())
+}
+
+fn validate_database_identifiers(db_config: &relus_common::DbConfig) -> Result<()> {
+    if db_config.table.is_empty() {
+        bail!("数据库配置必须包含 table 字段");
+    }
+    sanitize_identifier(&db_config.table)?;
     if let Some(keys) = &db_config.key_columns {
         for k in keys {
             sanitize_identifier(k)?;
         }
     }
-    Ok(cfg)
+    Ok(())
+}
+
+fn print_run_result(result: &crate::core::runner::RunResult) {
+    match result.status {
+        RunStatus::Shutdown => {
+            println!(
+                "Stream 任务已停止\n 已读出 {} records\n 已写入 {} records\n 耗时 {:.2}s",
+                result.stats.records_read, result.stats.records_written, result.stats.elapsed_secs
+            );
+        }
+        _ => {
+            println!(
+                "complete:\n 任务读出 {} records\n 任务写入 {} records\n 耗时 {:.2}s\n TP {:.0} rec/s",
+                result.stats.records_read,
+                result.stats.records_written,
+                result.stats.elapsed_secs,
+                result.stats.throughput
+            );
+        }
+    }
 }
 
 fn try_curl(cfg: &ApiConfig) -> Result<Vec<u8>> {
@@ -534,7 +508,7 @@ fn guess_type(sql_type: &str) -> &'static str {
 fn collect_job_configs(
     config_paths: Option<Vec<PathBuf>>,
     jobs_dir: Option<PathBuf>,
-) -> Vec<(String, JobConfig)> {
+) -> Result<Vec<(String, JobConfig)>> {
     let mut configs = Vec::new();
 
     // --config 指定的文件
@@ -549,27 +523,26 @@ fn collect_job_configs(
 
     // --jobs-dir 指定的目录
     if let Some(dir) = jobs_dir {
-        if let Ok(entries) = std::fs::read_dir(&dir) {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if path.extension().map(|e| e == "json").unwrap_or(false) {
-                    match load_job_config(&path) {
-                        Ok((id, cfg)) => configs.push((id, cfg)),
-                        Err(e) => eprintln!("Failed to load {}: {}", path.display(), e),
-                    }
+        let entries = std::fs::read_dir(&dir)
+            .with_context(|| format!("读取任务目录失败: {}", dir.display()))?;
+        for entry in entries {
+            let entry = entry.with_context(|| format!("读取任务目录项失败: {}", dir.display()))?;
+            let path = entry.path();
+            if path.extension().map(|e| e == "json").unwrap_or(false) {
+                match load_job_config(&path) {
+                    Ok((id, cfg)) => configs.push((id, cfg)),
+                    Err(e) => eprintln!("Failed to load {}: {}", path.display(), e),
                 }
             }
         }
     }
 
-    configs
+    Ok(configs)
 }
 
 fn load_job_config(path: &PathBuf) -> Result<(String, JobConfig)> {
-    let data = std::fs::read_to_string(path)
-        .with_context(|| format!("read failed: {}", path.display()))?;
-    let cfg: JobConfig =
-        serde_json::from_str(&data).with_context(|| format!("parse failed: {}", path.display()))?;
+    let cfg = read_job_config(path)?;
+    validate_job_identifiers(&cfg)?;
 
     let job_id = cfg
         .job_id

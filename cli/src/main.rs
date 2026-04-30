@@ -1,13 +1,30 @@
 use clap::Parser;
 use relus_core::core::cli::{run_cli, Cli};
-use relus_core::init_and_watch_config;
+use std::process::ExitCode;
 
 /// 数据同步 cli 入口
-fn main() {
+fn main() -> ExitCode {
     let cli: Cli = Cli::parse();
-    init_and_watch_config();
 
     relus_common::logging::init_file_logger();
 
-    run_cli(cli.command);
+    let runtime = match tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(4)
+        .enable_all()
+        .build()
+    {
+        Ok(runtime) => runtime,
+        Err(e) => {
+            eprintln!("Failed to initialize runtime: {}", e);
+            return ExitCode::FAILURE;
+        }
+    };
+
+    match runtime.block_on(run_cli(cli.command)) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("{}", e);
+            ExitCode::FAILURE
+        }
+    }
 }

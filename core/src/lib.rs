@@ -6,7 +6,7 @@ pub mod pipeline;
 use relus_reader as _;
 use relus_writer as _;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use parking_lot::RwLock;
 use relus_common::app_config::config_loader::{
     apply_json_defaults, get_config_manager, CONFIG_MANAGER, WATCHER_HOLDER,
@@ -140,76 +140,100 @@ pub fn init_and_watch_config() {
 
 pub fn read_config(path: PathBuf) -> Result<JobConfig> {
     let data = std::fs::read_to_string(&path)
-        .map_err(|_| anyhow::anyhow!("读取配置文件失败: {}", path.display()))?;
-    let cfg: JobConfig = serde_json::from_str(&data)?;
+        .with_context(|| format!("读取配置文件失败: {}", path.display()))?;
+    let cfg: JobConfig = serde_json::from_str(&data)
+        .with_context(|| format!("配置文件解析失败: {}", path.display()))?;
     Ok(cfg)
 }
 
 // 启动 HTTP 服务
-pub fn run_serve(host: String, port: u16) -> Result<()> {
+pub async fn run_serve(host: String, port: u16) -> Result<()> {
     init_system_config();
-    let rt = tokio::runtime::Runtime::new()?;
-    rt.block_on(async { core::serve::serve_http(host, port, None).await })?;
+    core::serve::serve_http(host, port, None).await?;
     Ok(())
 }
 
+fn scheduler_server_addr(host: Option<String>, port: Option<u16>) -> (String, u16) {
+    let Some(mgr) = init_system_config() else {
+        return (
+            host.unwrap_or_else(|| "127.0.0.1".to_string()),
+            port.unwrap_or(30001),
+        );
+    };
+
+    let mgr = mgr.read();
+    let host = host.unwrap_or_else(|| {
+        mgr.get("server.host")
+            .and_then(ConfigValue::as_str)
+            .filter(|host| !host.trim().is_empty())
+            .unwrap_or("127.0.0.1")
+            .to_string()
+    });
+
+    let port = port.unwrap_or_else(|| {
+        mgr.get("server.port")
+            .and_then(ConfigValue::as_i64)
+            .and_then(|port| u16::try_from(port).ok())
+            .filter(|port| *port != 0)
+            .unwrap_or(30001)
+    });
+
+    (host, port)
+}
 
 /// 启动 TaskScheduler 常驻运行
-pub fn run_scheduler(
+pub async fn run_scheduler(
     configs: Vec<(String, relus_common::job_config::JobConfig)>,
     enable_repl: bool,
+    host: Option<String>,
+    port: Option<u16>,
 ) -> Result<()> {
-    let rt = tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(4)
-        .enable_all()
-        .build()?;
+    let checkpoint_dir = relus_common::app_config::path::default_config_path("app_trans")
+        .parent()
+        .map(|p| p.join("checkpoints.redb"))
+        .unwrap_or_else(|| PathBuf::from("checkpoints.redb"));
 
-    rt.block_on(async {
-        let checkpoint_dir = relus_common::app_config::path::default_config_path("app_trans")
-            .parent()
-            .map(|p| p.join("checkpoints.redb"))
-            .unwrap_or_else(|| PathBuf::from("checkpoints.redb"));
+    let mut scheduler = crate::core::scheduler::TaskScheduler::new(checkpoint_dir)?;
+    let scheduler_handle = scheduler.control_handle();
 
-        let mut scheduler = crate::core::scheduler::TaskScheduler::new(checkpoint_dir)?;
-        let scheduler_handle = scheduler.control_handle();
+    if configs.is_empty() {
+        tracing::info!("[Run] no jobs loaded at startup; waiting for REPL/API submissions");
+        println!("No jobs loaded at startup; waiting for REPL/API submissions.");
+    }
 
-        for (job_id, config) in configs {
-            let schedule = config
-                .schedule
-                .as_ref()
-                .map(|s| crate::core::scheduler::Schedule::from_cli_str(&format!("{:?}", s)))
-                .unwrap_or_default();
-            match scheduler.submit_task(
-                job_id.clone(),
-                std::sync::Arc::new(config),
-                schedule,
-            ) {
-                Ok(id) => tracing::info!("[Run] job '{}' submitted", id),
-                Err(e) => tracing::error!("[Run] job '{}' submit failed: {}", job_id, e),
-            }
+    for (job_id, config) in configs {
+        let schedule = config
+            .schedule
+            .as_ref()
+            .map(crate::core::scheduler::Schedule::from_config)
+            .transpose()
+            .map_err(|message| anyhow::anyhow!("job '{}' schedule invalid: {}", job_id, message))?
+            .unwrap_or_default();
+        match scheduler.submit_task(job_id.clone(), std::sync::Arc::new(config), schedule) {
+            Ok(id) => tracing::info!("[Run] job '{}' submitted", id),
+            Err(e) => tracing::error!("[Run] job '{}' submit failed: {}", job_id, e),
         }
+    }
 
-        if enable_repl {
-            scheduler.start_repl();
-        } else {
-            tracing::info!("[Run] REPL disabled by --no-repl");
-        }
+    if enable_repl {
+        scheduler.start_repl();
+    } else {
+        tracing::info!("[Run] REPL disabled by --no-repl");
+    }
 
-        let server = tokio::spawn(crate::core::serve::serve_http(
-            "127.0.0.1".to_string(),
-            30001,
-            Some(scheduler_handle),
-        ));
-        tracing::info!("[Run] scheduler control API listening on 127.0.0.1:30001");
-        tracing::info!("[Run] scheduler starting, waiting for tasks...");
-        scheduler.run().await;
-        server.abort();
-        let _ = server.await;
-        tracing::info!("[Run] scheduler stopped");
+    let (host, port) = scheduler_server_addr(host, port);
+    let server = tokio::spawn(crate::core::serve::serve_http(
+        host.clone(),
+        port,
+        Some(scheduler_handle),
+    ));
+    tracing::info!("[Run] scheduler control API listening on {}:{}", host, port);
+    println!("Scheduler control API listening on {}:{}", host, port);
+    tracing::info!("[Run] scheduler starting, waiting for tasks...");
+    scheduler.run().await;
+    server.abort();
+    let _ = server.await;
+    tracing::info!("[Run] scheduler stopped");
 
-        Ok::<(), anyhow::Error>(())
-    })?;
-
-    // scheduler 已退出，强制终止进程（readline 线程可能仍在阻塞）
-    std::process::exit(0);
+    Ok(())
 }

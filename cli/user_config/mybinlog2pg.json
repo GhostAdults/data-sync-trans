@@ -48,7 +48,7 @@
     "userAccount": "string",
     "userPassword": "string"
   },
-  "sync_mode": "cdc",
+  "sync_mode": "incremental",
   "batch_size": 1,
   "channel_buffer_size": 12000
 }

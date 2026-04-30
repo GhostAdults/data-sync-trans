@@ -20,3 +20,5 @@ path = "src/main.rs"
 relus_core = { workspace = true }
 relus_common = { workspace = true }
 clap = { workspace = true }
+anyhow = { workspace = true }
+tokio = { workspace = true }

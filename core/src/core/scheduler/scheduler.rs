@@ -61,7 +61,10 @@ impl TaskScheduler {
 
     /// 启动 REPL 交互循环（在独立线程中运行，不阻塞 tokio runtime）
     pub fn start_repl(&self) {
-        let repl = Arc::new(ReplLoop::new(self.control_handle(), self.repl_cancel.clone()));
+        let repl = Arc::new(ReplLoop::new(
+            self.control_handle(),
+            self.repl_cancel.clone(),
+        ));
         let repl_alive = self.repl_alive.clone();
         repl_alive.store(true, Ordering::Relaxed);
         std::thread::spawn(move || {
@@ -71,8 +74,12 @@ impl TaskScheduler {
         info!("[TaskScheduler] REPL started");
     }
 
-    /// 核心调度循环，阻塞直到 exit 或 ctrl_c
     pub async fn run(&mut self) {
+        self.run_once().await;
+        info!("[TaskScheduler] stopped");
+    }
+
+    async fn run_once(&mut self) {
         info!("[TaskScheduler] started");
 
         loop {

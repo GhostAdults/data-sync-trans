@@ -129,15 +129,36 @@ async fn main() -> Result<()> {
 
     // 获取数据库配置
     let input_config = &configs["tasks"][0]["input"]["config"]["connections"][0];
-    let db_type = input_config.get("type").and_then(|v| v.as_str()).unwrap_or("mysql");
-    let host = input_config.get("host").and_then(|v| v.as_str()).unwrap_or("127.0.0.1");
-    let port = input_config.get("port").and_then(|v| v.as_u64()).unwrap_or(3306);
-    let database = input_config.get("database").and_then(|v| v.as_str()).unwrap_or("my_db");
-    let username = input_config.get("username").and_then(|v| v.as_str()).unwrap_or("root");
-    let password = input_config.get("password").and_then(|v| v.as_str()).unwrap_or_default();
+    let db_type = input_config
+        .get("type")
+        .and_then(|v| v.as_str())
+        .unwrap_or("mysql");
+    let host = input_config
+        .get("host")
+        .and_then(|v| v.as_str())
+        .unwrap_or("127.0.0.1");
+    let port = input_config
+        .get("port")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(3306);
+    let database = input_config
+        .get("database")
+        .and_then(|v| v.as_str())
+        .unwrap_or("my_db");
+    let username = input_config
+        .get("username")
+        .and_then(|v| v.as_str())
+        .unwrap_or("root");
+    let password = input_config
+        .get("password")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default();
     let table_name = input_config["table"].as_str().unwrap();
 
-    println!("数据库: {}://{}@{}:{}/{}", db_type, username, host, port, database);
+    println!(
+        "数据库: {}://{}@{}:{}/{}",
+        db_type, username, host, port, database
+    );
     println!("目标表: {}", table_name);
     println!("缓存目录: {}", SCHEMA_CACHE_DIR);
 
@@ -174,6 +195,8 @@ async fn main() -> Result<()> {
         sync_mode: None,
         batch_size: Some(100),
         channel_buffer_size: None,
+        job_id: None,
+        schedule: None,
     };
 
     // 创建连接池

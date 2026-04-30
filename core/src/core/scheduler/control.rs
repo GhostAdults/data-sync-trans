@@ -42,7 +42,10 @@ impl SchedulerControlHandle {
         Self { tx }
     }
 
-    pub async fn query_tasks(&self, job_id: Option<String>) -> Result<SchedulerResponse, SchedulerError> {
+    pub async fn query_tasks(
+        &self,
+        job_id: Option<String>,
+    ) -> Result<SchedulerResponse, SchedulerError> {
         let (reply, rx) = oneshot::channel();
         self.tx
             .send(SchedulerCommand::QueryTasks { job_id, reply })
@@ -85,9 +88,16 @@ impl SchedulerControlHandle {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum SchedulerResponse {
-    Tasks { tasks: Vec<TaskInfo>, repl_alive: bool },
-    TaskSubmitted { job_id: String },
-    TaskCancelled { job_id: String },
+    Tasks {
+        tasks: Vec<TaskInfo>,
+        repl_alive: bool,
+    },
+    TaskSubmitted {
+        job_id: String,
+    },
+    TaskCancelled {
+        job_id: String,
+    },
     ShutdownRequested,
 }
 
@@ -133,9 +143,10 @@ pub fn load_job_config_from_path(
         message: format!("File not found: {} ({})", path.display(), e),
     })?;
 
-    let config: JobConfig = serde_json::from_str(&data).map_err(|e| SchedulerError::InvalidConfig {
-        message: format!("Parse failed: {}", e),
-    })?;
+    let config: JobConfig =
+        serde_json::from_str(&data).map_err(|e| SchedulerError::InvalidConfig {
+            message: format!("Parse failed: {}", e),
+        })?;
 
     let job_id = config
         .job_id
@@ -150,7 +161,9 @@ pub fn load_job_config_from_path(
     let schedule = config
         .schedule
         .as_ref()
-        .map(|s| Schedule::from_cli_str(&format!("{:?}", s)))
+        .map(Schedule::from_config)
+        .transpose()
+        .map_err(|message| SchedulerError::InvalidConfig { message })?
         .unwrap_or_default();
 
     Ok((job_id, Arc::new(config), schedule))

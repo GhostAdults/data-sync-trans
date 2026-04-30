@@ -89,7 +89,6 @@ pub async fn serve_http(
             "/scheduler/tasks/:job_id/cancel",
             post(post_scheduler_cancel),
         )
-        .route("/scheduler/shutdown", post(post_scheduler_shutdown))
         .with_state(app_state);
     let addr = format!("{}:{}", host, port);
     let listener = TcpListener::bind(&addr).await?;
@@ -273,19 +272,6 @@ pub async fn post_scheduler_cancel(
     };
 
     match handle.cancel_task(job_id).await {
-        Ok(response) => scheduler_success(response),
-        Err(error) => scheduler_failure(error),
-    }
-}
-
-pub async fn post_scheduler_shutdown(
-    State(state): State<AppState>,
-) -> (StatusCode, Json<ApiResp<Value>>) {
-    let Some(handle) = state.scheduler else {
-        return scheduler_unavailable();
-    };
-
-    match handle.shutdown().await {
         Ok(response) => scheduler_success(response),
         Err(error) => scheduler_failure(error),
     }
@@ -735,11 +721,8 @@ mod tests {
             }
         });
 
-        let (status, Json(resp)) = get_scheduler_tasks(
-            State(state),
-            Query(SchedulerTasksQuery { job_id: None }),
-        )
-        .await;
+        let (status, Json(resp)) =
+            get_scheduler_tasks(State(state), Query(SchedulerTasksQuery { job_id: None })).await;
 
         assert_eq!(status, StatusCode::OK);
         assert!(resp.ok);

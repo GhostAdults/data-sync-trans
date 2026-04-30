@@ -5,9 +5,9 @@
 //! `RdbmsReader` 负责生命周期管理和数据读取（返回 JsonStream）。
 
 use crate::rdbms_reader_util::util::*;
+use crate::{DataReaderJob, DataReaderTask, JsonStream, ReadTask, SplitReaderResult};
 use anyhow::Result;
 use futures::{stream, StreamExt};
-use crate::{JsonStream, ReadTask, DataReaderJob, DataReaderTask, SplitReaderResult};
 use relus_common::JobConfig;
 use relus_connector_rdbms::pool::RdbmsPool;
 use relus_connector_rdbms::schema::{MetadataDiscoverer, RdbmsDiscoverer, TableSchema};

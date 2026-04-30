@@ -11,9 +11,9 @@
 
 use relus_common::data_source_config::DataSourceConfig;
 use relus_common::job_config::JobConfig;
-use relus_core::pipeline::RecordBuilder;
 use relus_common::types::{SourceType, TypeConverterRegistry};
 use relus_core::core::serve::sync;
+use relus_core::pipeline::RecordBuilder;
 use serde_json::json;
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -250,6 +250,8 @@ async fn main() {
         sync_mode: None,
         batch_size: Some(100),
         channel_buffer_size: None,
+        job_id: None,
+        schedule: None,
     };
 
     println!("配置信息:");

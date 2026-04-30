@@ -438,7 +438,6 @@ async fn run_paired_pipeline(
         reader_split.total_records,
         task_count
     );
-
     if task_count == 0 {
         info!("[{}] 无读取任务，Pipeline 关闭", reader.description());
         return Ok(PipelineStats::default());

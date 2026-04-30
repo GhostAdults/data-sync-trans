@@ -6,7 +6,9 @@ use std::sync::Arc;
 
 use anyhow::{bail, Result};
 use relus_connector_rdbms::pool::{DbKind, RdbmsPool};
-use relus_connector_rdbms::sql_builder::{execute_db_write, prepare_write_batch, validate_upsert_keys};
+use relus_connector_rdbms::sql_builder::{
+    execute_db_write, prepare_write_batch, validate_upsert_keys,
+};
 use relus_connector_rdbms::util::get_pool_from_output;
 
 use relus_common::pipeline::PipelineMessage;
@@ -169,7 +171,8 @@ impl DataWriterTask for RdbmsWriter {
         };
 
         if self.job.config.mode == WriteMode::Upsert {
-            validate_upsert_keys(&pool, &self.job.config.table, &self.job.config.key_columns).await?;
+            validate_upsert_keys(&pool, &self.job.config.table, &self.job.config.key_columns)
+                .await?;
         }
 
         let mut written = 0;
@@ -190,10 +193,7 @@ impl DataWriterTask for RdbmsWriter {
                         );
                     }
                 }
-                Err(e) => {
-                    error!("Writer-{} 写入失败: {}", task.task_id, e);
-                    bail!("Writer-{} 写入失败: {}", task.task_id, e);
-                }
+                Err(e) => bail!("Writer-{} 写入失败: {}", task.task_id, e),
             }
         }
         info!("Writer-{} 完成，共写入 {} 条数据", task.task_id, written);
