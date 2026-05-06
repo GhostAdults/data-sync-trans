@@ -11,7 +11,7 @@ use std::result::Result::{Err, Ok};
 use std::sync::Arc;
 
 use crate::core::axum_api::{h_describe, h_gen_mapping, h_list_tables, h_sync};
-use crate::core::runner::{run_sync, RunResult};
+use crate::core::runner::{start_task, RunResult};
 use crate::core::scheduler::{SchedulerControlHandle, SchedulerError, SchedulerResponse};
 use anyhow::Result;
 use relus_common::app_config::value::ConfigValue;
@@ -168,14 +168,11 @@ fn guess_type(sql_type: &str) -> &'static str {
     }
 }
 
-/// 同步数据函数
-pub async fn sync(cfg: JobConfig) -> Result<RunResult> {
-    run_sync(Arc::new(cfg), CancellationToken::new()).await
-}
-
-/// CLI 同步
-pub async fn sync_cli(cfg: JobConfig) -> Result<RunResult> {
-    run_sync(Arc::new(cfg), CancellationToken::new()).await
+/// 开始执行一个任务。
+///
+/// CLI 和 HTTP 的即时执行入口都走这里；调度器需要自定义取消令牌时直接调用 runner::start_task。
+pub async fn start_job(cfg: JobConfig) -> Result<RunResult> {
+    start_task(Arc::new(cfg), CancellationToken::new()).await
 }
 
 fn scheduler_unavailable() -> (StatusCode, Json<ApiResp<Value>>) {
@@ -453,7 +450,7 @@ pub async fn sync_command(
         }
     }
 
-    match sync(cfg).await {
+    match start_job(cfg).await {
         Ok(result) => (
             StatusCode::OK,
             Json(ApiResp {

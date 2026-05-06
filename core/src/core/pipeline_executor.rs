@@ -1,4 +1,4 @@
-//! 数据同步管道执行器
+//! Pipeline Executor 模块
 //!
 //! Reader → Channel → Writer 1:1
 //!
@@ -147,8 +147,8 @@ impl PipelineStats {
     }
 }
 
-/// 执行管道：Reader → Writer 1:1
-pub async fn run_pipeline(
+/// Pipeline 的执行逻辑：Reader → Writer 1:1
+pub async fn start_run(
     config: PipelineConfig,
     reader: Arc<dyn DataReader>,
     writer: Arc<dyn DataWriter>,

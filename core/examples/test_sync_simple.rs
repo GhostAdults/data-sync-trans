@@ -12,7 +12,7 @@
 use relus_common::data_source_config::DataSourceConfig;
 use relus_common::job_config::JobConfig;
 use relus_common::types::{SourceType, TypeConverterRegistry};
-use relus_core::core::serve::sync;
+use relus_core::core::serve::start_job;
 use relus_core::pipeline::RecordBuilder;
 use serde_json::json;
 use std::collections::BTreeMap;
@@ -265,7 +265,7 @@ async fn main() {
     }
 
     println!("\n开始同步...");
-    match sync(config).await {
+    match start_job(config).await {
         Ok(result) => {
             println!("同步成功!");
             println!("  状态: {:?}", result.status);

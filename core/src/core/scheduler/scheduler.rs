@@ -7,7 +7,7 @@ use super::control::{
 use super::cron::CronTracker;
 use super::repl::ReplLoop;
 use super::task_slot::TaskSlot;
-use crate::core::runner::{run_sync, RunStatus};
+use crate::core::runner::{start_task, RunStatus};
 use anyhow::Result;
 use relus_common::job_config::{JobConfig, SyncMode};
 use std::collections::HashMap;
@@ -267,7 +267,7 @@ impl TaskScheduler {
         let token_clone = cancel_token.clone();
 
         tokio::spawn(async move {
-            let result = run_sync(config, token_clone).await;
+            let result = start_task(config, token_clone).await;
             let done_result = match result {
                 Ok(r) => match r.status {
                     RunStatus::Success | RunStatus::Partial => TaskDoneResult::Success {

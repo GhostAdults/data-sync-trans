@@ -38,7 +38,6 @@ impl Default for StreamMode {
     }
 }
 
-/// 一个 reader job 分裂成多个 reader task
 #[derive(Debug, Clone)]
 pub struct ReadTask {
     pub task_id: usize,

@@ -7,9 +7,16 @@ fn main() -> ExitCode {
     let cli: Cli = Cli::parse();
 
     relus_common::logging::init_file_logger();
+    let default_parallelism = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(1);
+
+    let worker_limit = std::cmp::min(default_parallelism, 16);
+    let blocking_limit = 4 * worker_limit;
 
     let runtime = match tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(4)
+        .worker_threads(worker_limit)
+        .max_blocking_threads(blocking_limit)
         .enable_all()
         .build()
     {

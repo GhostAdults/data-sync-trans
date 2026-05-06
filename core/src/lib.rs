@@ -6,6 +6,7 @@ pub mod pipeline;
 use relus_reader as _;
 use relus_writer as _;
 
+use crate::core::scheduler::TaskScheduler;
 use anyhow::{Context, Result};
 use parking_lot::RwLock;
 use relus_common::app_config::config_loader::{
@@ -181,7 +182,7 @@ fn scheduler_server_addr(host: Option<String>, port: Option<u16>) -> (String, u1
     (host, port)
 }
 
-/// 启动 TaskScheduler 常驻运行
+/// start TaskScheduler
 pub async fn run_scheduler(
     configs: Vec<(String, relus_common::job_config::JobConfig)>,
     enable_repl: bool,
@@ -193,7 +194,7 @@ pub async fn run_scheduler(
         .map(|p| p.join("checkpoints.redb"))
         .unwrap_or_else(|| PathBuf::from("checkpoints.redb"));
 
-    let mut scheduler = crate::core::scheduler::TaskScheduler::new(checkpoint_dir)?;
+    let mut scheduler = TaskScheduler::new(checkpoint_dir)?;
     let scheduler_handle = scheduler.control_handle();
 
     if configs.is_empty() {

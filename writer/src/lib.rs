@@ -14,7 +14,7 @@ use tokio::sync::mpsc;
 // Writer trait 定义
 // ==========================================
 
-/// 一个 writer job 分裂成多个 writer task
+/// 一个 writer job 采取一对多关系 writer task
 #[derive(Debug, Clone)]
 pub struct WriteTask {
     pub task_id: usize,

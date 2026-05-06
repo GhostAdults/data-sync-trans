@@ -16,7 +16,7 @@ use relus_common::types::UnifiedValue;
 use relus_common::JobConfig;
 use relus_common::MappingRow;
 use tokio::sync::mpsc;
-use tracing::{error, info};
+use tracing::info;
 
 use crate::rdbms_writer_util::util::writer_split_util;
 use relus_common::job_config::WriteMode;

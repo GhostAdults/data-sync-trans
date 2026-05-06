@@ -113,7 +113,7 @@ pub async fn run_cli(cmd: Commands) -> Result<()> {
             init_and_watch_config();
             let cfg = read_job_config(&config)?;
             validate_job_identifiers(&cfg)?;
-            let result = sync_cli(cfg).await?;
+            let result = start_job(cfg).await?;
             print_run_result(&result);
         }
         Commands::ListTables { db_url, db_type } => {
@@ -214,7 +214,7 @@ pub async fn run_cli(cmd: Commands) -> Result<()> {
             init_and_watch_config();
             let cfg = read_job_config(&config)?;
             validate_job_identifiers(&cfg)?;
-            let result = sync_cli(cfg).await?;
+            let result = start_job(cfg).await?;
             println!("{}", serde_json::to_string_pretty(&result)?);
         }
         Commands::Serve { host, port } => {
