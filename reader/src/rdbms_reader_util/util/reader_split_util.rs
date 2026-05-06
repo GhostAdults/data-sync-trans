@@ -1,8 +1,8 @@
 use crate::rdbms_reader_util::rdbms_reader::count_total_records;
 use crate::rdbms_reader_util::rdbms_reader::RdbmsJob;
+use crate::{ReadTask, SplitReaderResult, StreamMode};
 use anyhow::Result;
 use relus_common::constant::key::SPLIT_FACTOR;
-use crate::{ReadTask, SplitReaderResult, StreamMode};
 use relus_connector_rdbms::pool::{ColumnValue, DbKind, RdbmsPool};
 use relus_connector_rdbms::util::{build_select_query_for, get_pool_from_config};
 use serde_json::Value as JsonValue;
@@ -27,7 +27,7 @@ pub async fn do_split(rdbms_job: &RdbmsJob, advice_number: usize) -> SplitReader
         }
     };
     // 计算总行数
-    let total_records = match count_total_records(
+    let total_records: usize = count_total_records(
         &pool,
         &config.table,
         config
@@ -37,10 +37,7 @@ pub async fn do_split(rdbms_job: &RdbmsJob, advice_number: usize) -> SplitReader
             .map(|s| s.as_str()),
     )
     .await
-    {
-        Ok(count) => count,
-        Err(_) => 0,
-    };
+    .unwrap_or_default();
     let data_source_config = &rdbms_job.original_config.source.config;
     let conns: Vec<JsonValue> = data_source_config
         .get("connections")
@@ -74,18 +71,18 @@ pub async fn do_split(rdbms_job: &RdbmsJob, advice_number: usize) -> SplitReader
 
         let need_split_table = each_table_should_split > 1 && has_split_pk;
 
-        if need_split_table {
+        if let (true, Some(split_pk)) = (need_split_table, config.split_pk.as_ref()) {
             if config.table_count == 1usize {
                 // split_factor是切分倍数,如果只有一张表，且需要切分，则可以适当增加切分片数以提高并行度
                 let split_factor = config.split_factor.unwrap_or(SPLIT_FACTOR);
-                each_table_should_split = each_table_should_split * split_factor;
+                each_table_should_split *= split_factor;
             }
             // 进行单表的切分
             match split_by_pk(
                 &pool,
                 db_kind,
                 config,
-                config.split_pk.as_ref().unwrap(),
+                split_pk,
                 each_table_should_split,
                 &conns,
             )

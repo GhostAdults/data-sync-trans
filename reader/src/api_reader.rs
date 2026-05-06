@@ -4,9 +4,9 @@
 //! `ApiJob` 负责业务逻辑（配置解析），
 //! `ApiReader` 负责生命周期管理和数据读取。
 
+use crate::{DataReaderJob, DataReaderTask, JsonStream, ReadTask, SplitReaderResult, StreamMode};
 use anyhow::Result;
 use futures::stream;
-use crate::{JsonStream, ReadTask, DataReaderJob, DataReaderTask, SplitReaderResult, StreamMode};
 use relus_common::JobConfig;
 use serde_json::Value as JsonValue;
 use std::sync::Arc;
@@ -64,9 +64,7 @@ impl DataReaderTask for ApiReader {
         info!("Reader-{} 获取了 {} 条数据", task.task_id, items.len());
 
         // 将一次性获取的 Vec<JsonValue> 包装为流
-        let json_stream: JsonStream = Box::pin(stream::iter(
-            items.into_iter().map(|v| Ok(v)),
-        ));
+        let json_stream: JsonStream = Box::pin(stream::iter(items.into_iter().map(Ok)));
         Ok(json_stream)
     }
 }

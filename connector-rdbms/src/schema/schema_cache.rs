@@ -30,9 +30,7 @@ impl SchemaCache {
         write_txn.commit()?;
 
         info!("Schema cache initialized at {:?}", path.as_ref());
-        Ok(Self {
-            db: Arc::new(db),
-        })
+        Ok(Self { db: Arc::new(db) })
     }
 
     /// 创建内存缓存（用于测试）
@@ -46,9 +44,7 @@ impl SchemaCache {
         }
         write_txn.commit()?;
 
-        Ok(Self {
-            db: Arc::new(db),
-        })
+        Ok(Self { db: Arc::new(db) })
     }
 
     /// 生成缓存键
@@ -156,17 +152,11 @@ impl SchemaCache {
     fn compare_schemas(&self, old: &TableSchema, new: &TableSchema) -> Vec<SchemaChange> {
         let mut changes = Vec::new();
 
-        let old_columns: std::collections::HashMap<&str, &ColumnInfo> = old
-            .columns
-            .iter()
-            .map(|c| (c.name.as_str(), c))
-            .collect();
+        let old_columns: std::collections::HashMap<&str, &ColumnInfo> =
+            old.columns.iter().map(|c| (c.name.as_str(), c)).collect();
 
-        let new_columns: std::collections::HashMap<&str, &ColumnInfo> = new
-            .columns
-            .iter()
-            .map(|c| (c.name.as_str(), c))
-            .collect();
+        let new_columns: std::collections::HashMap<&str, &ColumnInfo> =
+            new.columns.iter().map(|c| (c.name.as_str(), c)).collect();
 
         // 检查新增列
         for (name, col) in &new_columns {
@@ -246,10 +236,14 @@ mod tests {
     fn test_in_memory_cache() {
         let cache = SchemaCache::in_memory().unwrap();
 
-        let schema = TableSchema::new("users".to_string(), "postgres".to_string())
-            .with_columns(vec![
+        let schema =
+            TableSchema::new("users".to_string(), "postgres".to_string()).with_columns(vec![
                 ColumnInfo::new("id".to_string(), "bigint".to_string(), "int".to_string()),
-                ColumnInfo::new("name".to_string(), "varchar".to_string(), "text".to_string()),
+                ColumnInfo::new(
+                    "name".to_string(),
+                    "varchar".to_string(),
+                    "text".to_string(),
+                ),
             ]);
 
         // 注册 schema
@@ -269,7 +263,11 @@ mod tests {
         let old_schema = TableSchema::new("users".to_string(), "postgres".to_string())
             .with_columns(vec![
                 ColumnInfo::new("id".to_string(), "bigint".to_string(), "int".to_string()),
-                ColumnInfo::new("name".to_string(), "varchar".to_string(), "text".to_string()),
+                ColumnInfo::new(
+                    "name".to_string(),
+                    "varchar".to_string(),
+                    "text".to_string(),
+                ),
             ]);
 
         cache.register(&old_schema).unwrap();
@@ -277,8 +275,16 @@ mod tests {
         let new_schema = TableSchema::new("users".to_string(), "postgres".to_string())
             .with_columns(vec![
                 ColumnInfo::new("id".to_string(), "bigint".to_string(), "int".to_string()),
-                ColumnInfo::new("name".to_string(), "varchar".to_string(), "text".to_string()),
-                ColumnInfo::new("email".to_string(), "varchar".to_string(), "text".to_string()),
+                ColumnInfo::new(
+                    "name".to_string(),
+                    "varchar".to_string(),
+                    "text".to_string(),
+                ),
+                ColumnInfo::new(
+                    "email".to_string(),
+                    "varchar".to_string(),
+                    "text".to_string(),
+                ),
             ]);
 
         let changes = cache.detect_changes(&new_schema).unwrap();

@@ -1,12 +1,11 @@
 /// 这个模块定义了API的响应结构和一些通用的数据库查询参数结构。
-use serde::{Deserialize,Serialize};
-#[derive(Serialize,Debug)]
+use serde::{Deserialize, Serialize};
+#[derive(Serialize, Debug)]
 pub struct ApiResp<T> {
     pub ok: bool,
     pub data: Option<T>,
     pub error: Option<String>,
 }
-
 
 // 通用的数据库查询参数
 #[derive(Deserialize)]

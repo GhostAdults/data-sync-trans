@@ -1,5 +1,5 @@
-use std::hint::black_box;
 use async_trait::async_trait;
+use std::hint::black_box;
 use tokio::runtime::Runtime;
 
 // ==========================================
@@ -41,13 +41,19 @@ impl NativeImpl {
 // ==========================================
 
 trait ManualBoxJob {
-    fn execute(&self, n: usize) -> std::pin::Pin<Box<dyn std::future::Future<Output = usize> + Send + '_>>;
+    fn execute(
+        &self,
+        n: usize,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = usize> + Send + '_>>;
 }
 
 struct ManualBoxImpl;
 
 impl ManualBoxJob for ManualBoxImpl {
-    fn execute(&self, n: usize) -> std::pin::Pin<Box<dyn std::future::Future<Output = usize> + Send + '_>> {
+    fn execute(
+        &self,
+        n: usize,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = usize> + Send + '_>> {
         Box::pin(async move {
             tokio::time::sleep(tokio::time::Duration::from_nanos(1)).await;
             n * 2
@@ -97,14 +103,28 @@ fn main() {
 
     // 结果
     println!("📊 测试结果:");
-    println!("   async_trait:     {:?} ({:.2} μs/iter)", async_trait_time, async_trait_time.as_micros() as f64 / iterations as f64);
-    println!("   原生 async fn:   {:?} ({:.2} μs/iter)", native_time, native_time.as_micros() as f64 / iterations as f64);
-    println!("   手动 Box:        {:?} ({:.2} μs/iter)", manual_box_time, manual_box_time.as_micros() as f64 / iterations as f64);
+    println!(
+        "   async_trait:     {:?} ({:.2} μs/iter)",
+        async_trait_time,
+        async_trait_time.as_micros() as f64 / iterations as f64
+    );
+    println!(
+        "   原生 async fn:   {:?} ({:.2} μs/iter)",
+        native_time,
+        native_time.as_micros() as f64 / iterations as f64
+    );
+    println!(
+        "   手动 Box:        {:?} ({:.2} μs/iter)",
+        manual_box_time,
+        manual_box_time.as_micros() as f64 / iterations as f64
+    );
 
     println!("\n📈 相对开销:");
-    let overhead_pct = ((async_trait_time.as_nanos() as f64 / native_time.as_nanos() as f64) - 1.0) * 100.0;
+    let overhead_pct =
+        ((async_trait_time.as_nanos() as f64 / native_time.as_nanos() as f64) - 1.0) * 100.0;
     println!("   async_trait vs 原生: +{:.2}%", overhead_pct);
 
-    let overhead_ns = (async_trait_time.as_nanos() as f64 - native_time.as_nanos() as f64) / iterations as f64;
+    let overhead_ns =
+        (async_trait_time.as_nanos() as f64 - native_time.as_nanos() as f64) / iterations as f64;
     println!("   每次调用额外开销: {:.2} ns", overhead_ns);
 }

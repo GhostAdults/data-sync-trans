@@ -78,9 +78,16 @@ impl TaskSlot {
 
     pub fn update_from_done(&mut self, done: TaskDoneResult) {
         self.phase = match done {
-            TaskDoneResult::Success { records_read, records_written, elapsed_secs } => {
-                TaskPhase::Completed(TaskStats { records_read, records_written, records_failed: 0, elapsed_secs })
-            }
+            TaskDoneResult::Success {
+                records_read,
+                records_written,
+                elapsed_secs,
+            } => TaskPhase::Completed(TaskStats {
+                records_read,
+                records_written,
+                records_failed: 0,
+                elapsed_secs,
+            }),
             TaskDoneResult::Failed(_) if self.cancel_token.is_cancelled() => TaskPhase::Cancelled,
             TaskDoneResult::Failed(msg) => TaskPhase::Failed(msg),
             TaskDoneResult::Cancelled => TaskPhase::Cancelled,

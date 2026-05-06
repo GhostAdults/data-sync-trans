@@ -1,17 +1,16 @@
 /// AST 节点定义
 /// 将 AST 定义独立出来，便于扩展
-
 use serde_json::Value;
 
 /// 比较操作符
 #[derive(Debug, Clone, PartialEq)]
 pub enum CompareOp {
-    Eq,  // ==
-    Ne,  // !=
-    Gt,  // >
-    Lt,  // <
-    Ge,  // >=
-    Le,  // <=
+    Eq, // ==
+    Ne, // !=
+    Gt, // >
+    Lt, // <
+    Ge, // >=
+    Le, // <=
 }
 
 /// 表达式节点
@@ -28,16 +27,13 @@ pub enum Expr {
 
     /// 函数调用：func_name(arg1, arg2, ...)
     /// 使用字符串名称而不是枚举，支持动态注册
-    FuncCall {
-        name: String,
-        args: Vec<Expr>
-    },
+    FuncCall { name: String, args: Vec<Expr> },
 
     /// 比较表达式：left op right
     Compare {
         left: Box<Expr>,
         op: CompareOp,
-        right: Box<Expr>
+        right: Box<Expr>,
     },
 }
 

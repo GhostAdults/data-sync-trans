@@ -4,7 +4,9 @@
 //! 支持数据源类型分类和连接配置
 
 use serde::{Deserialize, Serialize};
+use std::convert::Infallible;
 use std::fmt;
+use std::str::FromStr;
 
 /// 数据源类型枚举
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -47,26 +49,6 @@ impl SourceType {
         }
     }
 
-    pub fn from_str(s: &str) -> Self {
-        match s.to_lowercase().as_str() {
-            "mysql" => SourceType::MySQL,
-            "postgresql" | "postgres" | "pg" => SourceType::PostgreSQL,
-            "sqlserver" | "mssql" => SourceType::SQLServer,
-            "mongodb" | "mongo" => SourceType::MongoDB,
-            "kafka" => SourceType::Kafka,
-            "redis" => SourceType::Redis,
-            "oracle" => SourceType::Oracle,
-            "sqlite" => SourceType::SQLite,
-            "clickhouse" => SourceType::ClickHouse,
-            "elasticsearch" | "es" => SourceType::Elasticsearch,
-            "s3" => SourceType::S3,
-            "file" => SourceType::File,
-            "api" => SourceType::API,
-            "database" => SourceType::Database,
-            other => SourceType::Other(other.to_string()),
-        }
-    }
-
     pub fn is_rdbms(&self) -> bool {
         matches!(
             self,
@@ -98,7 +80,32 @@ impl SourceType {
     pub fn is_api(&self) -> bool {
         matches!(self, SourceType::API)
     }
+}
 
+impl FromStr for SourceType {
+    type Err = Infallible;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let source_type = match s.to_lowercase().as_str() {
+            "mysql" => SourceType::MySQL,
+            "postgresql" | "postgres" | "pg" => SourceType::PostgreSQL,
+            "sqlserver" | "mssql" => SourceType::SQLServer,
+            "mongodb" | "mongo" => SourceType::MongoDB,
+            "kafka" => SourceType::Kafka,
+            "redis" => SourceType::Redis,
+            "oracle" => SourceType::Oracle,
+            "sqlite" => SourceType::SQLite,
+            "clickhouse" => SourceType::ClickHouse,
+            "elasticsearch" | "es" => SourceType::Elasticsearch,
+            "s3" => SourceType::S3,
+            "file" => SourceType::File,
+            "api" => SourceType::API,
+            "database" => SourceType::Database,
+            other => SourceType::Other(other.to_string()),
+        };
+
+        Ok(source_type)
+    }
 }
 
 impl fmt::Display for SourceType {
@@ -119,10 +126,16 @@ mod tests {
 
     #[test]
     fn test_source_type_conversion() {
-        assert_eq!(SourceType::from_str("mysql"), SourceType::MySQL);
-        assert_eq!(SourceType::from_str("PostgreSQL"), SourceType::PostgreSQL);
-        assert_eq!(SourceType::from_str("pg"), SourceType::PostgreSQL);
-        assert_eq!(SourceType::from_str("mongodb"), SourceType::MongoDB);
+        let parse = |value: &str| {
+            value
+                .parse::<SourceType>()
+                .unwrap_or_else(|err| match err {})
+        };
+
+        assert_eq!(parse("mysql"), SourceType::MySQL);
+        assert_eq!(parse("PostgreSQL"), SourceType::PostgreSQL);
+        assert_eq!(parse("pg"), SourceType::PostgreSQL);
+        assert_eq!(parse("mongodb"), SourceType::MongoDB);
     }
 
     #[test]
@@ -136,5 +149,4 @@ mod tests {
         assert!(SourceType::S3.is_file_based());
         assert!(SourceType::API.is_api());
     }
-
 }

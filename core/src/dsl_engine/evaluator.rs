@@ -1,7 +1,7 @@
+use super::ast::{CompareOp, EvalContext, Expr};
+use super::registry::FunctionRegistry;
 use serde_json::Value;
 use std::collections::HashMap;
-use super::ast::{Expr, CompareOp, EvalContext};
-use super::registry::FunctionRegistry;
 
 /// 求值器：负责遍历 AST 并执行节点
 pub struct Evaluator {
@@ -77,7 +77,7 @@ fn eval_call(expr: &Expr, ctx: &EvalContext, registry: &FunctionRegistry) -> Val
                     );
                 }
             }
-        },
+        }
         _ => Value::Null,
     }
 }
@@ -92,34 +92,26 @@ fn eval_compare(expr: &Expr, ctx: &EvalContext, registry: &FunctionRegistry) -> 
             let result = match op {
                 CompareOp::Eq => left_val == right_val,
                 CompareOp::Ne => left_val != right_val,
-                CompareOp::Gt => {
-                    match (left_val.as_i64(), right_val.as_i64()) {
-                        (Some(l), Some(r)) => l > r,
-                        _ => false,
-                    }
+                CompareOp::Gt => match (left_val.as_i64(), right_val.as_i64()) {
+                    (Some(l), Some(r)) => l > r,
+                    _ => false,
                 },
-                CompareOp::Lt => {
-                    match (left_val.as_i64(), right_val.as_i64()) {
-                        (Some(l), Some(r)) => l < r,  
-                        _ => false,
-                    }
+                CompareOp::Lt => match (left_val.as_i64(), right_val.as_i64()) {
+                    (Some(l), Some(r)) => l < r,
+                    _ => false,
                 },
-                CompareOp::Ge => {
-                    match (left_val.as_i64(), right_val.as_i64()) {
-                        (Some(l), Some(r)) => l >= r,
-                        _ => false,
-                    }
+                CompareOp::Ge => match (left_val.as_i64(), right_val.as_i64()) {
+                    (Some(l), Some(r)) => l >= r,
+                    _ => false,
                 },
-                CompareOp::Le => {
-                    match (left_val.as_i64(), right_val.as_i64()) {
-                        (Some(l), Some(r)) => l <= r,
-                        _ => false,
-                    }
+                CompareOp::Le => match (left_val.as_i64(), right_val.as_i64()) {
+                    (Some(l), Some(r)) => l <= r,
+                    _ => false,
                 },
             };
 
             Value::Bool(result)
-        },
+        }
         _ => Value::Null,
     }
 }
@@ -152,13 +144,13 @@ impl SyncEngine {
             match super::parser::compile_dsl(&rule) {
                 Ok(ast) => {
                     mappings.insert(target_field, ast);
-                },
+                }
                 Err(e) => {
                     panic!(
                         "column_mapping 字段 '{}' 的 DSL 规则编译失败:\n  规则: {}\n  错误: {}\n请检查语法是否正确",
                         target_field, rule, e
                     );
-                },
+                }
             }
         }
 

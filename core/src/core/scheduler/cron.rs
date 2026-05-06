@@ -26,7 +26,13 @@ impl CronTracker {
     /// 注册定时任务
     pub fn register(&mut self, job_id: String, schedule: Schedule) {
         let next_fire = Self::calc_next_fire(&schedule);
-        self.entries.insert(job_id, ScheduleEntry { schedule, next_fire });
+        self.entries.insert(
+            job_id,
+            ScheduleEntry {
+                schedule,
+                next_fire,
+            },
+        );
     }
 
     /// 取消注册
@@ -45,7 +51,10 @@ impl CronTracker {
             .entries
             .iter()
             .filter_map(|(id, entry)| {
-                entry.next_fire.map_or(false, |f| f <= now).then(|| id.clone())
+                entry
+                    .next_fire
+                    .map_or(false, |f| f <= now)
+                    .then(|| id.clone())
             })
             .collect();
 

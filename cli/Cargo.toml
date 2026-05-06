@@ -22,3 +22,6 @@ relus_common = { workspace = true }
 clap = { workspace = true }
 anyhow = { workspace = true }
 tokio = { workspace = true }
+
+[lints]
+workspace = true

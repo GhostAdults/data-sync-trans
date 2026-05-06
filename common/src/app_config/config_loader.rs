@@ -1,7 +1,7 @@
 use crate::app_config::manager::ConfigManager;
 use crate::app_config::schema::ConfigSchema;
 use crate::app_config::value::ConfigValue;
-use anyhow::Result;
+use anyhow::{bail, Result};
 use config::{Config, File};
 use parking_lot::RwLock;
 use serde_json::Value;
@@ -86,7 +86,7 @@ pub fn apply_json_defaults(mgr: &mut ConfigManager, prefix: &str, value: &Value)
     }
 }
 
-pub fn unflatten(flat: &HashMap<String, ConfigValue>) -> serde_json::Value {
+pub fn unflatten(flat: &HashMap<String, ConfigValue>) -> Result<serde_json::Value> {
     let mut root = serde_json::Map::new();
 
     for (key, value) in flat {
@@ -95,16 +95,20 @@ pub fn unflatten(flat: &HashMap<String, ConfigValue>) -> serde_json::Value {
 
         for (i, part) in parts.iter().enumerate() {
             if i == parts.len() - 1 {
-                current.insert(part.to_string(), serde_json::to_value(value).unwrap());
+                current.insert(part.to_string(), value.as_value());
             } else {
-                current = current
+                let entry = current
                     .entry(part.to_string())
-                    .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()))
-                    .as_object_mut()
-                    .unwrap();
+                    .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
+
+                let Some(next) = entry.as_object_mut() else {
+                    bail!("config key '{}' conflicts with nested key '{}'", part, key);
+                };
+
+                current = next;
             }
         }
     }
 
-    serde_json::Value::Object(root)
+    Ok(serde_json::Value::Object(root))
 }

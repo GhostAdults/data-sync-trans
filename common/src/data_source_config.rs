@@ -89,7 +89,10 @@ pub struct ApiConfig {
 
 impl DataSourceConfig {
     pub fn config_str(&self, key: &str) -> Option<String> {
-        self.config.get(key).and_then(|v| v.as_str()).map(|s| s.to_string())
+        self.config
+            .get(key)
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
     }
 
     pub fn config_u64(&self, key: &str) -> Option<u64> {
@@ -101,7 +104,11 @@ impl DataSourceConfig {
     }
 
     pub fn config_str_or_default(&self, key: &str) -> String {
-        self.config.get(key).and_then(|v| v.as_str()).unwrap_or_default().to_string()
+        self.config
+            .get(key)
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string()
     }
 
     /// 从 config 中提取 connection 对象
@@ -135,10 +142,7 @@ impl DataSourceConfig {
             .and_then(|v| v.as_str())
             .unwrap_or("127.0.0.1")
             .to_string();
-        let port = conn
-            .get("port")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(3306) as u16;
+        let port = conn.get("port").and_then(|v| v.as_u64()).unwrap_or(3306) as u16;
         let database = conn
             .get("database")
             .and_then(|v| v.as_str())

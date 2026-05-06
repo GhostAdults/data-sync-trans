@@ -22,3 +22,6 @@ rust_decimal = { workspace = true }
 clap = { workspace = true }
 dashmap = "5"
 redb = "2"
+
+[lints]
+workspace = true

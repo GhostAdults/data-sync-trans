@@ -294,7 +294,10 @@ async fn query_unique_columns(pool: &RdbmsPool, table: &str) -> Result<Vec<Strin
             );
             let rows = sqlx::query(&sql).fetch_all(p).await?;
             use sqlx::Row;
-            Ok(rows.iter().filter_map(|r| r.try_get("COLUMN_NAME").ok()).collect())
+            Ok(rows
+                .iter()
+                .filter_map(|r| r.try_get("COLUMN_NAME").ok())
+                .collect())
         }
         RdbmsPool::Postgres(p) => {
             let sql = format!(
@@ -310,7 +313,10 @@ async fn query_unique_columns(pool: &RdbmsPool, table: &str) -> Result<Vec<Strin
             );
             let rows = sqlx::query(&sql).fetch_all(p).await?;
             use sqlx::Row;
-            Ok(rows.iter().filter_map(|r| r.try_get("column_name").ok()).collect())
+            Ok(rows
+                .iter()
+                .filter_map(|r| r.try_get("column_name").ok())
+                .collect())
         }
     }
 }

@@ -42,9 +42,7 @@ fn generate_test_row(id: usize) -> TestRow {
 }
 
 fn generate_test_batch(start_id: usize, size: usize) -> Vec<TestRow> {
-    (start_id..start_id + size)
-        .map(generate_test_row)
-        .collect()
+    (start_id..start_id + size).map(generate_test_row).collect()
 }
 
 // ==========================================
@@ -262,17 +260,24 @@ fn bench_thread_configuration(c: &mut criterion::Criterion) {
     let mut group = c.benchmark_group("thread_config");
 
     for (reader_threads, writer_threads) in &[
-        (1, 1), (1, 2), (1, 4),
-        (2, 1), (2, 2), (2, 4),
-        (4, 1), (4, 2), (4, 4),
+        (1, 1),
+        (1, 2),
+        (1, 4),
+        (2, 1),
+        (2, 2),
+        (2, 4),
+        (4, 1),
+        (4, 2),
+        (4, 4),
     ] {
         group.bench_with_input(
-            criterion::BenchmarkId::new("config", format!("R{}W{}", reader_threads, writer_threads)),
+            criterion::BenchmarkId::new(
+                "config",
+                format!("R{}W{}", reader_threads, writer_threads),
+            ),
             &(*reader_threads, *writer_threads),
             |b, &(rt_count, wt_count)| {
-                b.iter(|| {
-                    run_pipeline(total_records, 100, rt_count, wt_count, 1000)
-                });
+                b.iter(|| run_pipeline(total_records, 100, rt_count, wt_count, 1000));
             },
         );
     }
@@ -289,9 +294,7 @@ fn bench_channel_buffer(c: &mut criterion::Criterion) {
             criterion::BenchmarkId::from_parameter(buffer_size),
             &buffer_size,
             |b, &size| {
-                b.iter(|| {
-                    run_pipeline(total_records, 100, 2, 2, size)
-                });
+                b.iter(|| run_pipeline(total_records, 100, 2, 2, size));
             },
         );
     }
@@ -308,9 +311,7 @@ fn bench_batch_size(c: &mut criterion::Criterion) {
             criterion::BenchmarkId::from_parameter(batch_size),
             &batch_size,
             |b, &size| {
-                b.iter(|| {
-                    run_pipeline(total_records, size, 2, 2, 1000)
-                });
+                b.iter(|| run_pipeline(total_records, size, 2, 2, 1000));
             },
         );
     }
@@ -326,9 +327,7 @@ fn bench_data_scale(c: &mut criterion::Criterion) {
             criterion::BenchmarkId::from_parameter(records),
             &records,
             |b, &total| {
-                b.iter(|| {
-                    run_pipeline(total, 100, 2, 2, 1000)
-                });
+                b.iter(|| run_pipeline(total, 100, 2, 2, 1000));
             },
         );
     }

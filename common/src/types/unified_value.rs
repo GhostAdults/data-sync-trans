@@ -6,10 +6,12 @@
 use chrono::{NaiveDate, NaiveDateTime, NaiveTime};
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
+use std::convert::Infallible;
 use std::fmt;
+use std::str::FromStr;
 
 /// 类型标识 - 用于类型提示和映射配置
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum TypeKind {
     Int,
     Float,
@@ -19,28 +21,13 @@ pub enum TypeKind {
     Date,
     Time,
     Json,
+    #[default]
     Text,
     Bytes,
     Array,
 }
 
 impl TypeKind {
-    pub fn from_str(s: &str) -> Self {
-        match s.to_lowercase().as_str() {
-            "int" | "integer" | "i64" | "i32" => TypeKind::Int,
-            "float" | "double" | "f64" => TypeKind::Float,
-            "bool" | "boolean" => TypeKind::Bool,
-            "decimal" | "numeric" => TypeKind::Decimal,
-            "timestamp" | "datetime" => TypeKind::Timestamp,
-            "date" => TypeKind::Date,
-            "time" => TypeKind::Time,
-            "json" => TypeKind::Json,
-            "bytes" | "binary" | "blob" => TypeKind::Bytes,
-            "array" => TypeKind::Array,
-            _ => TypeKind::Text,
-        }
-    }
-
     pub fn as_str(&self) -> &'static str {
         match self {
             TypeKind::Int => "int",
@@ -58,15 +45,31 @@ impl TypeKind {
     }
 }
 
-impl fmt::Display for TypeKind {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.as_str())
+impl FromStr for TypeKind {
+    type Err = Infallible;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let kind = match s.to_lowercase().as_str() {
+            "int" | "integer" | "i64" | "i32" => TypeKind::Int,
+            "float" | "double" | "f64" => TypeKind::Float,
+            "bool" | "boolean" => TypeKind::Bool,
+            "decimal" | "numeric" => TypeKind::Decimal,
+            "timestamp" | "datetime" => TypeKind::Timestamp,
+            "date" => TypeKind::Date,
+            "time" => TypeKind::Time,
+            "json" => TypeKind::Json,
+            "bytes" | "binary" | "blob" => TypeKind::Bytes,
+            "array" => TypeKind::Array,
+            _ => TypeKind::Text,
+        };
+
+        Ok(kind)
     }
 }
 
-impl Default for TypeKind {
-    fn default() -> Self {
-        TypeKind::Text
+impl fmt::Display for TypeKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.as_str())
     }
 }
 
@@ -424,10 +427,12 @@ mod tests {
 
     #[test]
     fn test_type_kind() {
-        assert_eq!(TypeKind::from_str("int"), TypeKind::Int);
-        assert_eq!(TypeKind::from_str("float"), TypeKind::Float);
-        assert_eq!(TypeKind::from_str("timestamp"), TypeKind::Timestamp);
-        assert_eq!(TypeKind::from_str("unknown"), TypeKind::Text);
+        let parse = |value: &str| value.parse::<TypeKind>().unwrap_or_else(|err| match err {});
+
+        assert_eq!(parse("int"), TypeKind::Int);
+        assert_eq!(parse("float"), TypeKind::Float);
+        assert_eq!(parse("timestamp"), TypeKind::Timestamp);
+        assert_eq!(parse("unknown"), TypeKind::Text);
     }
 
     #[test]

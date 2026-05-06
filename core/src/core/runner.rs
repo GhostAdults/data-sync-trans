@@ -223,7 +223,8 @@ impl TaskRunner for StreamRunner {
         let pipeline_config = self.config.to_pipeline_config();
 
         let pipeline_token = cancel_token.clone();
-        let pipeline_future = start_run(pipeline_config, reader, writer, job_config, pipeline_token);
+        let pipeline_future =
+            start_run(pipeline_config, reader, writer, job_config, pipeline_token);
         let cancelled = cancel_token.cancelled();
 
         tokio::pin!(pipeline_future);

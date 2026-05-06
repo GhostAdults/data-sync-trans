@@ -104,7 +104,9 @@ impl TypeConverter for DecimalConverter {
             return Ok(UnifiedValue::OptDecimal(None));
         }
         if let Some(n) = v.as_f64() {
-            return Ok(UnifiedValue::Decimal(Decimal::from_f64_retain(n).unwrap_or_default()));
+            return Ok(UnifiedValue::Decimal(
+                Decimal::from_f64_retain(n).unwrap_or_default(),
+            ));
         }
         if let Some(s) = v.as_str() {
             return s
@@ -225,7 +227,7 @@ impl TypeConverterRegistry {
 
     pub fn convert(&self, v: &JsonValue, type_hint: Option<&str>) -> Result<UnifiedValue> {
         let kind = type_hint
-            .map(TypeKind::from_str)
+            .map(|hint| hint.parse::<TypeKind>().unwrap_or_else(|err| match err {}))
             .unwrap_or(TypeKind::Text);
 
         let converter = self.converters.get(&kind).unwrap_or(&self.default);

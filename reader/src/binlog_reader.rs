@@ -45,7 +45,7 @@ impl BinlogConfig {
     pub fn from_data_source_config(input: &DataSourceConfig) -> Result<Self> {
         let conn = input.config.get("connection").cloned().unwrap_or_default();
         let conns = input.config.get("connections").and_then(|v| v.as_array());
-        let source = conns.and_then(|a| a.first()).unwrap_or_else(|| &conn);
+        let source = conns.and_then(|a| a.first()).unwrap_or(&conn);
 
         Ok(Self {
             hostname: source

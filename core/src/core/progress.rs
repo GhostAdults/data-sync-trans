@@ -45,8 +45,7 @@ pub fn create_progress_bars(total_records: usize) -> ProgressContext {
 
         (rb, spacer, wb)
     } else {
-        let spinner_sty =
-            ProgressStyle::with_template("{spinner} {prefix}: {pos} events").unwrap();
+        let spinner_sty = ProgressStyle::with_template("{spinner} {prefix}: {pos} events").unwrap();
 
         let rb = multi.add(ProgressBar::new_spinner());
         rb.set_style(spinner_sty.clone());
@@ -77,14 +76,10 @@ impl ProgressContext {
             self.reader_bar.finish_with_message("Done.");
             self.writer_bar.finish_with_message("Done.");
         } else {
-            self.reader_bar.finish_with_message(format!(
-                "Reader: {} events",
-                self.reader_bar.position()
-            ));
-            self.writer_bar.finish_with_message(format!(
-                "Writer: {} events",
-                self.writer_bar.position()
-            ));
+            self.reader_bar
+                .finish_with_message(format!("Reader: {} events", self.reader_bar.position()));
+            self.writer_bar
+                .finish_with_message(format!("Writer: {} events", self.writer_bar.position()));
         }
         self.spacer
             .finish_with_message("-------------------------------------------------------------");

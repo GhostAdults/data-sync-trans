@@ -16,7 +16,7 @@ pub fn op_upper(args: &[super::ast::Expr], eval_fn: &dyn Fn(&super::ast::Expr) -
     Value::String(s.to_uppercase())
 }
 
-pub fn op_concat(args: &[super::ast::Expr], eval_fn: &dyn Fn(&super::ast::Expr) -> Value) -> Value {   
+pub fn op_concat(args: &[super::ast::Expr], eval_fn: &dyn Fn(&super::ast::Expr) -> Value) -> Value {
     if args.len() < 2 {
         return Value::Null;
     }
@@ -27,7 +27,10 @@ pub fn op_concat(args: &[super::ast::Expr], eval_fn: &dyn Fn(&super::ast::Expr) 
     Value::String(format!("{}{}", s1, s2))
 }
 
-pub fn op_coalesce(args: &[super::ast::Expr], eval_fn: &dyn Fn(&super::ast::Expr) -> Value) -> Value {
+pub fn op_coalesce(
+    args: &[super::ast::Expr],
+    eval_fn: &dyn Fn(&super::ast::Expr) -> Value,
+) -> Value {
     for arg in args {
         let val = eval_fn(arg);
         if !val.is_null() {
@@ -49,9 +52,9 @@ pub fn op_if(args: &[super::ast::Expr], eval_fn: &dyn Fn(&super::ast::Expr) -> V
 
     // 根据条件决定求值哪个分支（惰性求值）
     if condition.as_bool().unwrap_or(false) {
-        eval_fn(&args[1])  // true 分支
+        eval_fn(&args[1]) // true 分支
     } else {
-        eval_fn(&args[2])  // false 分支
+        eval_fn(&args[2]) // false 分支
     }
 }
 

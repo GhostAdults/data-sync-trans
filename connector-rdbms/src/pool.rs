@@ -75,7 +75,7 @@ pub async fn get_db_pool(
     max_conns: u32,
     timeout_secs: Option<u64>,
 ) -> Result<RdbmsPool> {
-    let pools: &DashMap<PoolConfig, RdbmsPool> = DB_POOLS.get_or_init(|| DashMap::new());
+    let pools: &DashMap<PoolConfig, RdbmsPool> = DB_POOLS.get_or_init(DashMap::new);
     let key = PoolConfig {
         kind,
         url: url.to_string(),
@@ -306,7 +306,7 @@ fn bind_typed_val_pg<'q>(
         UnifiedValue::Int(n) => q = q.bind(*n),
         UnifiedValue::Float(n) => q = q.bind(*n),
         UnifiedValue::Bool(b) => q = q.bind(*b),
-        UnifiedValue::Decimal(d) => q = q.bind(d.clone()),
+        UnifiedValue::Decimal(d) => q = q.bind(*d),
         UnifiedValue::OptI64(n) => q = q.bind(*n),
         UnifiedValue::OptF64(n) => q = q.bind(*n),
         UnifiedValue::OptBool(n) => q = q.bind(*n),
@@ -412,7 +412,7 @@ fn bind_typed_val_my<'q>(
         UnifiedValue::Int(n) => q = q.bind(*n),
         UnifiedValue::Float(n) => q = q.bind(*n),
         UnifiedValue::Bool(b) => q = q.bind(*b),
-        UnifiedValue::Decimal(d) => q = q.bind(d.clone()),
+        UnifiedValue::Decimal(d) => q = q.bind(*d),
         UnifiedValue::OptI64(n) => q = q.bind(*n),
         UnifiedValue::OptF64(n) => q = q.bind(*n),
         UnifiedValue::OptBool(n) => q = q.bind(*n),

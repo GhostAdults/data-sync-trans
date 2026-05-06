@@ -38,18 +38,16 @@ impl ConfigValue {
         match self {
             ConfigValue::Bool(v) => serde_json::Value::Bool(*v),
             ConfigValue::Int(v) => serde_json::Value::Number(serde_json::Number::from(*v)),
-            ConfigValue::Float(v) => {
-                serde_json::Value::Number(serde_json::Number::from_f64(*v).unwrap_or(serde_json::Number::from(0)))
-            }
+            ConfigValue::Float(v) => serde_json::Value::Number(
+                serde_json::Number::from_f64(*v).unwrap_or(serde_json::Number::from(0)),
+            ),
             ConfigValue::String(v) => serde_json::Value::String(v.clone()),
             ConfigValue::Array(arr) => {
                 serde_json::Value::Array(arr.iter().map(|v| v.as_value()).collect())
             }
             ConfigValue::Object(map) => {
-                let obj: serde_json::Map<String, serde_json::Value> = map
-                    .iter()
-                    .map(|(k, v)| (k.clone(), v.as_value()))
-                    .collect();
+                let obj: serde_json::Map<String, serde_json::Value> =
+                    map.iter().map(|(k, v)| (k.clone(), v.as_value())).collect();
                 serde_json::Value::Object(obj)
             }
         }
@@ -70,13 +68,11 @@ impl From<serde_json::Value> for ConfigValue {
             serde_json::Value::Array(arr) => {
                 ConfigValue::Array(arr.into_iter().map(ConfigValue::from).collect())
             }
-            serde_json::Value::Object(map) => {
-                ConfigValue::Object(
-                    map.into_iter()
-                        .map(|(k, v)| (k, ConfigValue::from(v)))
-                        .collect(),
-                )
-            }
+            serde_json::Value::Object(map) => ConfigValue::Object(
+                map.into_iter()
+                    .map(|(k, v)| (k, ConfigValue::from(v)))
+                    .collect(),
+            ),
             serde_json::Value::Null => {
                 // 通常 ConfigValue 不包含 Null 变体，
                 // 这里如果遇到 Null，映射为空字符串
@@ -91,4 +87,3 @@ impl From<&serde_json::Value> for ConfigValue {
         ConfigValue::from(value.clone())
     }
 }
-

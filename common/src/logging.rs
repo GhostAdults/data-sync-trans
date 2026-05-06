@@ -1,5 +1,6 @@
 use chrono::Local;
 use std::io::Write;
+use std::path::PathBuf;
 use std::sync::Mutex;
 use tracing_subscriber::fmt::time::FormatTime;
 use tracing_subscriber::EnvFilter;
@@ -16,16 +17,18 @@ impl FormatTime for ChronoLocalTimer {
 ///
 /// # Panics
 ///
-/// 当无法获取 exe 路径、无法创建目录或无法创建日志文件时 panic。
+/// 当无法创建日志文件时 panic。
 pub fn init_file_logger() {
     let exe_dir = std::env::current_exe()
-        .expect("无法获取可执行文件路径")
-        .parent()
-        .expect("无法获取可执行文件所在目录")
-        .to_path_buf();
+        .ok()
+        .and_then(|path| path.parent().map(PathBuf::from))
+        .unwrap_or_else(|| PathBuf::from("."));
 
     let log_dir = exe_dir.join("logs");
-    std::fs::create_dir_all(&log_dir).expect("无法创建 logs 目录");
+    if let Err(err) = std::fs::create_dir_all(&log_dir) {
+        eprintln!("无法创建 logs 目录 {}: {}", log_dir.display(), err);
+        return;
+    }
 
     let log_name = format!("{}.log", Local::now().format("%Y-%m-%d"));
     let log_path = log_dir.join(&log_name);
@@ -36,12 +39,14 @@ pub fn init_file_logger() {
     tracing_subscriber::fmt()
         .with_timer(ChronoLocalTimer)
         .with_writer(move || {
-            let file = log_file
-                .lock()
-                .unwrap()
-                .try_clone()
-                .expect("clone log file");
-            Box::new(std::io::BufWriter::new(file)) as Box<dyn Write + Send>
+            let file = log_file.lock().unwrap();
+            match file.try_clone() {
+                Ok(file) => Box::new(std::io::BufWriter::new(file)) as Box<dyn Write + Send>,
+                Err(err) => {
+                    eprintln!("无法克隆日志文件句柄: {}", err);
+                    Box::new(std::io::sink()) as Box<dyn Write + Send>
+                }
+            }
         })
         .with_ansi(false)
         .with_env_filter(EnvFilter::from_default_env().add_directive("info".parse().unwrap()))

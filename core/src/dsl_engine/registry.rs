@@ -1,7 +1,7 @@
-use serde_json::Value;
-use std::collections::HashMap;
 use super::ast::Expr;
 use super::functions::*;
+use serde_json::Value;
+use std::collections::HashMap;
 
 /// 函数签名：接受参数列表和求值闭包，返回结果
 pub type DslFunction = fn(&[Expr], &dyn Fn(&Expr) -> Value) -> Value;
@@ -32,7 +32,12 @@ impl FunctionRegistry {
     }
 
     /// 调用函数
-    pub fn call(&self, name: &str, args: &[Expr], eval_fn: &dyn Fn(&Expr) -> Value) -> Result<Value, String> {
+    pub fn call(
+        &self,
+        name: &str,
+        args: &[Expr],
+        eval_fn: &dyn Fn(&Expr) -> Value,
+    ) -> Result<Value, String> {
         match self.functions.get(name) {
             Some(func) => Ok(func(args, eval_fn)),
             None => Err(format!("未知函数: {}", name)),

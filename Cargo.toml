@@ -70,3 +70,18 @@ sqlx = { version = "0.7", default-features = false, features = [
     "chrono",
     "rust_decimal",
 ] }
+
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+correctness = { level = "deny", priority = -1 }
+suspicious = { level = "deny", priority = -1 }
+unwrap_used = "warn"
+expect_used = "warn"
+todo = "warn"
+clone_on_ref_ptr = "warn"
+large_enum_variant = "warn"
+large_futures = "deny"
+option_as_ref_cloned = "deny"

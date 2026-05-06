@@ -1,12 +1,12 @@
+use super::ast::{CompareOp, Expr};
 use nom::{
     branch::alt,
     bytes::complete::{tag, take_until, take_while1},
-    character::complete::{multispace0, alpha1, digit1},
+    character::complete::{alpha1, digit1, multispace0},
     multi::separated_list0,
     sequence::{delimited, tuple},
     IResult,
 };
-use super::ast::{Expr, CompareOp};
 
 /// 解析字段引用：source.field_name
 fn parse_field(input: &str) -> IResult<&str, Expr> {
@@ -48,7 +48,12 @@ fn parse_compare_op(input: &str) -> IResult<&str, CompareOp> {
         "<" => CompareOp::Lt,
         ">=" => CompareOp::Ge,
         "<=" => CompareOp::Le,
-        _ => return Err(nom::Err::Error(nom::error::Error::new(input, nom::error::ErrorKind::Tag))),
+        _ => {
+            return Err(nom::Err::Error(nom::error::Error::new(
+                input,
+                nom::error::ErrorKind::Tag,
+            )))
+        }
     };
 
     Ok((input, compare_op))
@@ -63,18 +68,19 @@ fn parse_func_call(input: &str) -> IResult<&str, Expr> {
     let (input, _) = multispace0(input)?;
 
     // 解析参数列表
-    let (input, args) = separated_list0(
-        tuple((multispace0, tag(","), multispace0)),
-        parse_expr
-    )(input)?;
+    let (input, args) =
+        separated_list0(tuple((multispace0, tag(","), multispace0)), parse_expr)(input)?;
 
     let (input, _) = multispace0(input)?;
     let (input, _) = tag(")")(input)?;
 
-    Ok((input, Expr::FuncCall {
-        name: func_name.to_string(),
-        args
-    }))
+    Ok((
+        input,
+        Expr::FuncCall {
+            name: func_name.to_string(),
+            args,
+        },
+    ))
 }
 
 /// 解析表达式
@@ -84,7 +90,7 @@ fn parse_expr(input: &str) -> IResult<&str, Expr> {
         parse_func_call,
         parse_field,
         parse_string_literal,
-        parse_number_literal
+        parse_number_literal,
     ))(input)?;
 
     // 尝试解析比较操作符
@@ -93,13 +99,16 @@ fn parse_expr(input: &str) -> IResult<&str, Expr> {
             parse_func_call,
             parse_field,
             parse_string_literal,
-            parse_number_literal
+            parse_number_literal,
         ))(input)?;
-        return Ok((input, Expr::Compare {
-            left: Box::new(left),
-            op,
-            right: Box::new(right)
-        }));
+        return Ok((
+            input,
+            Expr::Compare {
+                left: Box::new(left),
+                op,
+                right: Box::new(right),
+            },
+        ));
     }
 
     Ok((input, left))
@@ -114,7 +123,7 @@ pub fn compile_dsl(dsl: &str) -> Result<Expr, String> {
             } else {
                 Ok(expr)
             }
-        },
+        }
         Err(e) => Err(format!("解析失败: {}", e)),
     }
 }

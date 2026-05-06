@@ -156,7 +156,11 @@ pub async fn start_run(
     cancel_token: CancellationToken,
 ) -> Result<PipelineStats> {
     // 从 JobConfig 构建 RecordBuilder
-    let source_type = SourceType::from_str(&job_config.source.source_type);
+    let source_type = job_config
+        .source
+        .source_type
+        .parse::<SourceType>()
+        .unwrap_or_else(|err| match err {});
     let record_builder = Arc::new(
         RecordBuilder::new(
             job_config.column_mapping.clone(),

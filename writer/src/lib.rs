@@ -83,11 +83,15 @@ impl WriterRegistry {
     pub fn collect_and_register() {
         let registry = Self::instance();
         for plugin in inventory::iter::<WriterPlugin> {
-            registry
-                .creators
-                .write()
-                .unwrap()
-                .insert(plugin.source_type.to_string(), plugin.create);
+            let Ok(mut creators) = registry.creators.write() else {
+                eprintln!(
+                    "Writer registry is unavailable; skipped registration for '{}'",
+                    plugin.source_type
+                );
+                continue;
+            };
+
+            creators.insert(plugin.source_type.to_string(), plugin.create);
         }
     }
 
@@ -108,7 +112,12 @@ impl WriterRegistry {
     }
 
     pub fn list_writers(&self) -> Vec<String> {
-        self.creators.read().unwrap().keys().cloned().collect()
+        let Ok(creators) = self.creators.read() else {
+            eprintln!("Writer registry is unavailable; cannot list writers");
+            return Vec::new();
+        };
+
+        creators.keys().cloned().collect()
     }
 }
 

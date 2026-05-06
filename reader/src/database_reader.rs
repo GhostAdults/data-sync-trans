@@ -4,8 +4,8 @@
 //! `DatabaseJob` 负责业务逻辑（配置构建、schema discovery），
 //! `DatabaseReader` 负责生命周期管理和数据读取。
 
+use crate::{DataReaderJob, DataReaderTask, JsonStream, ReadTask, SplitReaderResult};
 use anyhow::Result;
-use crate::{JsonStream, ReadTask, DataReaderJob, DataReaderTask, SplitReaderResult};
 use std::sync::Arc;
 use tracing::info;
 
@@ -42,8 +42,8 @@ impl DatabaseJob {
         self
     }
 
-    fn build_rdbms_job(&self) -> RdbmsJob {
-        let db_config = self.original_config.source.parse_database_config().unwrap();
+    fn build_rdbms_job(&self) -> Result<RdbmsJob> {
+        let db_config = self.original_config.source.parse_database_config()?;
 
         let input = &self.original_config.source;
         let split_pk = input.config_str("split_pk");
@@ -71,11 +71,14 @@ impl DatabaseJob {
             columns,
         };
 
-        RdbmsJob::new(Arc::clone(&self.original_config), rdbms_config)
+        Ok(RdbmsJob::new(
+            Arc::clone(&self.original_config),
+            rdbms_config,
+        ))
     }
 
     pub async fn discover(&self) -> Result<RdbmsReader> {
-        let mut rdbms_job = self.build_rdbms_job();
+        let mut rdbms_job = self.build_rdbms_job()?;
 
         if self.discovery_config.enabled {
             info!("Schema discovery enabled, discovering table schema...");
@@ -93,7 +96,7 @@ impl DataReaderJob for DatabaseReader {
         rdbms_reader.split(reader_threads).await
     }
     fn description(&self) -> String {
-        format!("{}", self.job.original_config.source.name)
+        self.job.original_config.source.name.to_string()
     }
 }
 

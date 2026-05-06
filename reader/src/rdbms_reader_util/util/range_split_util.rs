@@ -3,8 +3,8 @@ use num_traits::{Num, Zero};
 
 use crate::rdbms_reader_util::util::reader_split_util::PkRange;
 
-fn uuid_to_biguint(s: &str) -> BigUint {
-    BigUint::from_str_radix(s, 16).expect("invalid uuid hex string")
+fn uuid_to_biguint(s: &str) -> Option<BigUint> {
+    BigUint::from_str_radix(s, 16).ok()
 }
 
 fn biguint_to_uuid(n: &BigUint) -> String {
@@ -23,10 +23,10 @@ fn string_to_bigint(s: &str, radix: u32) -> BigInt {
     for b in s.bytes().rev() {
         assert!(
             b < 128,
-            "仅支持 ASCII 字符串，radix到非 ASCII 字符: 0x{:02X}",
+            "仅支持 ASCII 字符串,radix到非 ASCII 字符: 0x{:02X}",
             b
         );
-        result = result + BigInt::from(b) * base.pow(k);
+        result += BigInt::from(b) * base.pow(k);
         k += 1;
     }
     result
@@ -97,9 +97,9 @@ fn do_bigint_split(left: &BigInt, right: &BigInt, n: usize) -> Vec<BigInt> {
 
     let mut upper_bound = left.clone();
     for i in 1..n {
-        upper_bound = upper_bound + &step;
+        upper_bound += &step;
         if remainder >= i {
-            upper_bound = upper_bound + BigInt::from(1u32);
+            upper_bound += BigInt::from(1u32);
         }
         result.push(upper_bound.clone());
     }
@@ -175,8 +175,13 @@ pub fn do_hex_string_split(
 ) -> Vec<PkRange> {
     assert!(n > 0);
 
-    let mut l = uuid_to_biguint(left);
-    let mut r = uuid_to_biguint(right);
+    let (Some(mut l), Some(mut r)) = (uuid_to_biguint(left), uuid_to_biguint(right)) else {
+        return vec![PkRange::Inclusive {
+            pk: pk.to_string(),
+            min: left.to_string(),
+            max: right.to_string(),
+        }];
+    };
 
     if l > r {
         std::mem::swap(&mut l, &mut r);

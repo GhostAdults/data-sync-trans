@@ -14,9 +14,9 @@ use tokio::sync::mpsc;
 use crate::rdbms_writer_util::rdbms_writer::{
     PipelineRowWriter, RdbmsConfig, RdbmsJob, RdbmsWriter,
 };
+use crate::{DataWriterJob, DataWriterTask, SplitWriterResult, WriteTask};
 use relus_common::constant::pipeline::DEFAULT_BATCH_SIZE;
 use relus_common::job_config::WriteMode;
-use crate::{SplitWriterResult, WriteTask, DataWriterJob, DataWriterTask};
 
 pub struct DatabaseWriter {
     job: DatabaseJob,
@@ -75,7 +75,7 @@ impl DataWriterJob for DatabaseWriter {
         rdbms_writer.split(writer_threads).await
     }
     fn description(&self) -> String {
-        format!("{}", self.job.original_config.target.name)
+        self.job.original_config.target.name.to_string()
     }
 }
 

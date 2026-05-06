@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
-use std::fmt;
+use std::{fmt, str::FromStr};
 
 use crate::data_source_config::DataSourceConfig;
 
@@ -21,18 +21,13 @@ pub struct JobConfig {
     pub schedule: Option<ScheduleConfig>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum SyncMode {
+    #[default]
     Fullsnapshot,
     Incremental,
     Mix,
-}
-
-impl Default for SyncMode {
-    fn default() -> Self {
-        SyncMode::Fullsnapshot
-    }
 }
 
 /// 调度策略配置（可从 JSON 反序列化）
@@ -42,12 +37,16 @@ pub enum ScheduleConfig {
     /// cron 表达式
     Cron(String),
     /// 带类型标签
-    Typed { r#type: String, value: Option<String> },
+    Typed {
+        r#type: String,
+        value: Option<String>,
+    },
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, Copy)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq, Copy)]
 #[serde(rename_all = "lowercase")]
 pub enum WriteMode {
+    #[default]
     Insert,
     Upsert,
     Update,
@@ -55,15 +54,6 @@ pub enum WriteMode {
 }
 
 impl WriteMode {
-    pub fn from_str(s: &str) -> Self {
-        match s.to_lowercase().as_str() {
-            "upsert" => WriteMode::Upsert,
-            "update" => WriteMode::Update,
-            "delete" => WriteMode::Delete,
-            _ => WriteMode::Insert,
-        }
-    }
-
     pub fn as_str(&self) -> &'static str {
         match self {
             WriteMode::Insert => "insert",
@@ -78,14 +68,22 @@ impl WriteMode {
             .target
             .writer_mode
             .as_deref()
-            .map(WriteMode::from_str)
-            .unwrap_or(WriteMode::Insert)
+            .and_then(|mode| mode.parse().ok())
+            .unwrap_or_default()
     }
 }
 
-impl Default for WriteMode {
-    fn default() -> Self {
-        WriteMode::Insert
+impl FromStr for WriteMode {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "insert" => Ok(WriteMode::Insert),
+            "upsert" => Ok(WriteMode::Upsert),
+            "update" => Ok(WriteMode::Update),
+            "delete" => Ok(WriteMode::Delete),
+            _ => Err(()),
+        }
     }
 }
 

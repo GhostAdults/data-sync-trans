@@ -6,8 +6,8 @@ use relus_common::data_source_config::DbConfig;
 use relus_common::job_config::WriteMode;
 use relus_common::JobConfig;
 
-use relus_common::constant::pipeline::DEFAULT_BATCH_SIZE;
 use crate::{SplitWriterResult, WriteTask};
+use relus_common::constant::pipeline::DEFAULT_BATCH_SIZE;
 
 /// 切分 Writer 任务
 pub fn do_split(original_config: &Arc<JobConfig>, advice_number: usize) -> SplitWriterResult {

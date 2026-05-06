@@ -1,4 +1,4 @@
-use crate::app_config::config_loader::{load_user_config,unflatten};
+use crate::app_config::config_loader::{load_user_config, unflatten};
 use crate::app_config::path::default_config_path;
 use crate::app_config::schema::ConfigSchema;
 use crate::app_config::value::ConfigValue;
@@ -34,7 +34,8 @@ impl ConfigManager {
     }
 
     pub fn register(&mut self, key: &str, schema: ConfigSchema) {
-        self.defaults.insert(key.to_string(), schema.default.clone());
+        self.defaults
+            .insert(key.to_string(), schema.default.clone());
         self.schema.insert(key.to_string(), schema);
     }
 
@@ -68,12 +69,11 @@ impl ConfigManager {
     }
 
     pub fn persist(&self) -> Result<()> {
-        let root = unflatten(&self.user);
+        let root = unflatten(&self.user)?;
         let content = serde_json::to_string_pretty(&root)?;
         std::fs::write(&self.path, content)?;
         Ok(())
     }
 }
-
 
 pub type SharedConfig = RwLock<ConfigManager>;

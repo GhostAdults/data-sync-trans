@@ -14,23 +14,23 @@
 //! - `MappingRow`: 核心数据载体
 //! - `TypeConverter` / `TypeConverterRegistry`: 类型转换器
 
-mod unified_value;
-mod source_type;
-mod original_type_info;
-mod mapping_field;
-mod mapping_schema;
-mod mapping_row;
 mod converter;
+mod mapping_field;
+mod mapping_row;
+mod mapping_schema;
+mod original_type_info;
+mod source_type;
+mod unified_value;
 
 // === 核心类型导出 ===
 
-pub use unified_value::{TypeKind, UnifiedValue};
-pub use source_type::SourceType;
-pub use original_type_info::OriginalTypeInfo;
-pub use mapping_field::MappingField;
-pub use mapping_schema::MappingSchema;
-pub use mapping_row::{BatchMetadata, MappingBatch, MappingRow};
 pub use converter::{TypeConverter, TypeConverterRegistry};
+pub use mapping_field::MappingField;
+pub use mapping_row::{BatchMetadata, MappingBatch, MappingRow};
+pub use mapping_schema::MappingSchema;
+pub use original_type_info::OriginalTypeInfo;
+pub use source_type::SourceType;
+pub use unified_value::{TypeKind, UnifiedValue};
 
 // === 向后兼容类型别名 ===
 
@@ -68,8 +68,10 @@ mod tests {
 
     #[test]
     fn test_type_kind_from_str() {
-        assert_eq!(TypeKind::from_str("int"), TypeKind::Int);
-        assert_eq!(TypeKind::from_str("float"), TypeKind::Float);
-        assert_eq!(TypeKind::from_str("timestamp"), TypeKind::Timestamp);
+        let parse = |value: &str| value.parse::<TypeKind>().unwrap_or_else(|err| match err {});
+
+        assert_eq!(parse("int"), TypeKind::Int);
+        assert_eq!(parse("float"), TypeKind::Float);
+        assert_eq!(parse("timestamp"), TypeKind::Timestamp);
     }
 }

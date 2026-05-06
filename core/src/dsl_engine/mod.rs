@@ -1,9 +1,9 @@
 // 新的模块化架构
-pub mod ast;           // AST 节点定义
-pub mod parser;        // 解析器
-pub mod registry;      // 函数注册表
-pub mod functions;     // 函数实现
-pub mod evaluator;     // 求值器
+pub mod ast; // AST 节点定义
+pub mod evaluator;
+pub mod functions; // 函数实现
+pub mod parser; // 解析器
+pub mod registry; // 函数注册表 // 求值器
 
 // 重新导出主要类型
 pub use evaluator::SyncEngine;
@@ -19,8 +19,14 @@ mod tests {
 
         let user_config = vec![
             ("user_name".to_string(), "upper(source.name)".to_string()),
-            ("full_info".to_string(), "concat(source.region, source.name)".to_string()),
-            ("status".to_string(), "coalesce(source.state, 'UNKNOWN')".to_string()),
+            (
+                "full_info".to_string(),
+                "concat(source.region, source.name)".to_string(),
+            ),
+            (
+                "status".to_string(),
+                "coalesce(source.state, 'UNKNOWN')".to_string(),
+            ),
             ("constant_tag".to_string(), "'IMPORTED_DATA'".to_string()),
         ];
 
@@ -46,9 +52,18 @@ mod tests {
         println!("=== If Function Test ===\n");
 
         let user_config = vec![
-            ("is_active".to_string(), "if(source.flag == '1', 1, 0)".to_string()),
-            ("status_text".to_string(), "if(source.status == 'active', 'ACTIVE', 'INACTIVE')".to_string()),
-            ("priority".to_string(), "if(source.level > 5, 'HIGH', 'LOW')".to_string()),
+            (
+                "is_active".to_string(),
+                "if(source.flag == '1', 1, 0)".to_string(),
+            ),
+            (
+                "status_text".to_string(),
+                "if(source.status == 'active', 'ACTIVE', 'INACTIVE')".to_string(),
+            ),
+            (
+                "priority".to_string(),
+                "if(source.level > 5, 'HIGH', 'LOW')".to_string(),
+            ),
         ];
 
         println!("--- 1. 初始化引擎 ---");
@@ -97,18 +112,23 @@ mod tests {
         println!("\n=== 测试完成 ===");
     }
 
-
     #[test]
     fn test_list_with_transformation() {
         println!("=== List Data with Transformation Test ===\n");
 
         // 配置字段映射，并添加一些转换逻辑
         let user_config = vec![
-            ("n".to_string(), "upper(source.name)".to_string()),           // 名字转大写
-            ("a".to_string(), "source.age".to_string()),                   // 年龄保持不变
-            ("s".to_string(), "source.sex".to_string()),                   // 性别保持不变
-            ("full_info".to_string(), "concat(source.name, source.sex)".to_string()), // 拼接信息
-            ("is_adult".to_string(), "if(source.age >= 18, 1, 0)".to_string()), // 判断是否成年
+            ("n".to_string(), "upper(source.name)".to_string()), // 名字转大写
+            ("a".to_string(), "source.age".to_string()),         // 年龄保持不变
+            ("s".to_string(), "source.sex".to_string()),         // 性别保持不变
+            (
+                "full_info".to_string(),
+                "concat(source.name, source.sex)".to_string(),
+            ), // 拼接信息
+            (
+                "is_adult".to_string(),
+                "if(source.age >= 18, 1, 0)".to_string(),
+            ), // 判断是否成年
         ];
         println!("--- 1. 初始化引擎 ---");
         let engine = SyncEngine::new(user_config);
@@ -132,7 +152,10 @@ mod tests {
         assert_eq!(results[0].get("n").and_then(|v| v.as_str()), Some("ALICE"));
         assert_eq!(results[0].get("a").and_then(|v| v.as_i64()), Some(25));
         assert_eq!(results[0].get("s").and_then(|v| v.as_str()), Some("F"));
-        assert_eq!(results[0].get("full_info").and_then(|v| v.as_str()), Some("AliceF"));
+        assert_eq!(
+            results[0].get("full_info").and_then(|v| v.as_str()),
+            Some("AliceF")
+        );
         assert_eq!(results[0].get("is_adult").and_then(|v| v.as_i64()), Some(1));
 
         // 验证第二条数据的转换（未成年）
@@ -140,8 +163,14 @@ mod tests {
         assert_eq!(results[1].get("is_adult").and_then(|v| v.as_i64()), Some(0));
 
         // 验证第三条数据的转换
-        assert_eq!(results[2].get("n").and_then(|v| v.as_str()), Some("CHARLIE"));
-        assert_eq!(results[2].get("full_info").and_then(|v| v.as_str()), Some("CharlieM"));
+        assert_eq!(
+            results[2].get("n").and_then(|v| v.as_str()),
+            Some("CHARLIE")
+        );
+        assert_eq!(
+            results[2].get("full_info").and_then(|v| v.as_str()),
+            Some("CharlieM")
+        );
 
         println!("✅ 所有转换验证通过！");
         println!("\n=== 测试完成 ===");
