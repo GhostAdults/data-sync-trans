@@ -1,5 +1,6 @@
 use super::ast::{CompareOp, EvalContext, Expr};
 use super::registry::FunctionRegistry;
+use anyhow::{anyhow, Result};
 use serde_json::Value;
 use std::collections::HashMap;
 
@@ -22,11 +23,11 @@ impl Evaluator {
     }
 
     /// 求值表达式 - 统一入口，委托给具体的节点处理函数
-    pub fn eval(&self, expr: &Expr, ctx: &EvalContext) -> Value {
+    pub fn eval(&self, expr: &Expr, ctx: &EvalContext) -> Result<Value> {
         match expr {
-            Expr::Field(_) => eval_field(expr, ctx),
-            Expr::StringLiteral(_) => eval_literal(expr),
-            Expr::NumberLiteral(_) => eval_literal(expr),
+            Expr::Field(_) => Ok(eval_field(expr, ctx)),
+            Expr::StringLiteral(_) => Ok(eval_literal(expr)),
+            Expr::NumberLiteral(_) => Ok(eval_literal(expr)),
             Expr::FuncCall { .. } => eval_call(expr, ctx, &self.registry),
             Expr::Compare { .. } => eval_compare(expr, ctx, &self.registry),
         }
@@ -61,33 +62,31 @@ fn eval_field(expr: &Expr, ctx: &EvalContext) -> Value {
 }
 
 /// 求值函数调用节点
-fn eval_call(expr: &Expr, ctx: &EvalContext, registry: &FunctionRegistry) -> Value {
+fn eval_call(expr: &Expr, ctx: &EvalContext, registry: &FunctionRegistry) -> Result<Value> {
     match expr {
         Expr::FuncCall { name, args } => {
             // 创建求值闭包 - 递归调用 eval_expr
             let eval_fn = |arg_expr: &Expr| eval_expr(arg_expr, ctx, registry);
 
             // 通过注册表调用函数
-            match registry.call(name, args, &eval_fn) {
-                Ok(result) => result,
-                Err(e) => {
-                    panic!(
-                        "DSL 函数调用失败: {}\n  函数: {}\n  可用函数: upper, concat, coalesce, if\n请检查 column_mapping 中的函数名是否正确",
-                        e, name
-                    );
-                }
-            }
+            registry.call(name, args, &eval_fn).map_err(|e| {
+                anyhow!(
+                    "DSL function call failed: {}\n  function: {}\n  available functions: upper, concat, coalesce, if\nPlease check the function name in column_mapping.",
+                    e,
+                    name
+                )
+            })
         }
-        _ => Value::Null,
+        _ => Ok(Value::Null),
     }
 }
 
 /// 求值比较表达式节点
-fn eval_compare(expr: &Expr, ctx: &EvalContext, registry: &FunctionRegistry) -> Value {
+fn eval_compare(expr: &Expr, ctx: &EvalContext, registry: &FunctionRegistry) -> Result<Value> {
     match expr {
         Expr::Compare { left, op, right } => {
-            let left_val = eval_expr(left, ctx, registry);
-            let right_val = eval_expr(right, ctx, registry);
+            let left_val = eval_expr(left, ctx, registry)?;
+            let right_val = eval_expr(right, ctx, registry)?;
 
             let result = match op {
                 CompareOp::Eq => left_val == right_val,
@@ -110,18 +109,18 @@ fn eval_compare(expr: &Expr, ctx: &EvalContext, registry: &FunctionRegistry) -> 
                 },
             };
 
-            Value::Bool(result)
+            Ok(Value::Bool(result))
         }
-        _ => Value::Null,
+        _ => Ok(Value::Null),
     }
 }
 
 /// 统一的表达式求值函数 - 所有节点处理的入口
 /// 这个函数保持简洁，只负责分发到具体的节点处理函数
-fn eval_expr(expr: &Expr, ctx: &EvalContext, registry: &FunctionRegistry) -> Value {
+fn eval_expr(expr: &Expr, ctx: &EvalContext, registry: &FunctionRegistry) -> Result<Value> {
     match expr {
-        Expr::Field(_) => eval_field(expr, ctx),
-        Expr::StringLiteral(_) | Expr::NumberLiteral(_) => eval_literal(expr),
+        Expr::Field(_) => Ok(eval_field(expr, ctx)),
+        Expr::StringLiteral(_) | Expr::NumberLiteral(_) => Ok(eval_literal(expr)),
         Expr::FuncCall { .. } => eval_call(expr, ctx, registry),
         Expr::Compare { .. } => eval_compare(expr, ctx, registry),
     }
@@ -138,7 +137,7 @@ pub struct SyncEngine {
 }
 
 impl SyncEngine {
-    pub fn new(configs: Vec<(String, String)>) -> Self {
+    pub fn new(configs: Vec<(String, String)>) -> Result<Self> {
         let mut mappings = HashMap::new();
         for (target_field, rule) in configs {
             match super::parser::compile_dsl(&rule) {
@@ -146,31 +145,31 @@ impl SyncEngine {
                     mappings.insert(target_field, ast);
                 }
                 Err(e) => {
-                    panic!(
-                        "column_mapping 字段 '{}' 的 DSL 规则编译失败:\n  规则: {}\n  错误: {}\n请检查语法是否正确",
+                    return Err(anyhow!(
+                        "column_mapping field '{}' DSL rule compile failed:\n  rule: {}\n  error: {}\nPlease check the DSL syntax.",
                         target_field, rule, e
-                    );
+                    ));
                 }
             }
         }
 
-        Self {
+        Ok(Self {
             mappings,
             evaluator: Evaluator::new(),
-        }
+        })
     }
 
     /// 处理一行数据
-    pub fn process_row(&self, source_row: &Value) -> HashMap<String, Value> {
+    pub fn process_row(&self, source_row: &Value) -> Result<HashMap<String, Value>> {
         let ctx = EvalContext::new(source_row);
         let mut target_row = HashMap::new();
 
         for (target_field, ast) in &self.mappings {
-            let result = self.evaluator.eval(ast, &ctx); // 节点处理函数
+            let result = self.evaluator.eval(ast, &ctx)?; // 节点处理函数
             target_row.insert(target_field.clone(), result);
         }
 
-        target_row
+        Ok(target_row)
     }
 
     /// 获取求值器的可变引用（用于注册自定义函数）

@@ -7,8 +7,8 @@ use crate::run_scheduler;
 use crate::run_serve;
 use clap::{Parser, Subcommand};
 use relus_common::{ApiConfig, JobConfig};
-use relus_connector_rdbms::pool::detect_db_kind;
-use relus_connector_rdbms::pool::DbKind;
+use relus_connector_rdbms::pool::detect_database_kind;
+use relus_connector_rdbms::pool::DatabaseKind;
 
 use anyhow::{bail, Context, Result};
 use regex::Regex;
@@ -44,13 +44,13 @@ pub enum Commands {
         #[arg(short = 'u', long)]
         db_url: String,
         #[arg(short = 't', long)]
-        db_type: Option<DbKind>,
+        db_type: Option<DatabaseKind>,
     },
     DescribeTable {
         #[arg(short = 'u', long)]
         db_url: String,
         #[arg(short = 't', long)]
-        db_type: Option<DbKind>,
+        db_type: Option<DatabaseKind>,
         #[arg(short = 'b', long)]
         table: String,
     },
@@ -58,7 +58,7 @@ pub enum Commands {
         #[arg(short = 'u', long)]
         db_url: String,
         #[arg(short = 't', long)]
-        db_type: Option<DbKind>,
+        db_type: Option<DatabaseKind>,
         #[arg(short = 'b', long)]
         table: String,
         #[arg(short = 'o', long)]
@@ -117,9 +117,9 @@ pub async fn run_cli(cmd: Commands) -> Result<()> {
             print_run_result(&result);
         }
         Commands::ListTables { db_url, db_type } => {
-            let kind = detect_db_kind(&db_url, db_type)?;
+            let kind = detect_database_kind(&db_url, db_type)?;
             match kind {
-                DbKind::Postgres => {
+                DatabaseKind::Postgres => {
                     let pool = PgPoolOptions::new()
                         .max_connections(5)
                         .connect(&db_url)
@@ -128,7 +128,7 @@ pub async fn run_cli(cmd: Commands) -> Result<()> {
                         println!("{}", table);
                     }
                 }
-                DbKind::Mysql => {
+                DatabaseKind::Mysql => {
                     let pool = MySqlPoolOptions::new()
                         .max_connections(5)
                         .connect(&db_url)
@@ -145,16 +145,16 @@ pub async fn run_cli(cmd: Commands) -> Result<()> {
             table,
         } => {
             sanitize_identifier(&table)?;
-            let kind = detect_db_kind(&db_url, db_type)?;
+            let kind = detect_database_kind(&db_url, db_type)?;
             let cols = match kind {
-                DbKind::Postgres => {
+                DatabaseKind::Postgres => {
                     let pool = PgPoolOptions::new()
                         .max_connections(5)
                         .connect(&db_url)
                         .await?;
                     fetch_columns_postgres(&pool, &table).await?
                 }
-                DbKind::Mysql => {
+                DatabaseKind::Mysql => {
                     let pool = MySqlPoolOptions::new()
                         .max_connections(5)
                         .connect(&db_url)
@@ -177,16 +177,16 @@ pub async fn run_cli(cmd: Commands) -> Result<()> {
             output,
         } => {
             sanitize_identifier(&table)?;
-            let kind = detect_db_kind(&db_url, db_type)?;
+            let kind = detect_database_kind(&db_url, db_type)?;
             let cols = match kind {
-                DbKind::Postgres => {
+                DatabaseKind::Postgres => {
                     let pool = PgPoolOptions::new()
                         .max_connections(5)
                         .connect(&db_url)
                         .await?;
                     fetch_columns_postgres(&pool, &table).await?
                 }
-                DbKind::Mysql => {
+                DatabaseKind::Mysql => {
                     let pool = MySqlPoolOptions::new()
                         .max_connections(5)
                         .connect(&db_url)

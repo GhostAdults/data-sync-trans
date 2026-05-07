@@ -5,7 +5,8 @@
 use anyhow::{bail, Context, Result};
 use std::sync::Arc;
 
-use super::pool::{detect_db_kind, get_db_pool, DbKind, RdbmsPool};
+use super::pool::{detect_database_kind, get_db_pool, DatabaseKind, RdbmsPool};
+use super::sql_builder::SqlBuilder;
 use relus_common::data_source_config::DataSourceConfig;
 use relus_common::job_config::JobConfig;
 use relus_common::resp::BaseDbQuery;
@@ -48,13 +49,13 @@ pub async fn get_pool_for(ds: &DataSourceConfig) -> Result<Arc<RdbmsPool>> {
     let db_config = ds.parse_database_config()?;
     let db_type_str = ds.get_source_db_type();
 
-    let kind = detect_db_kind(
+    let kind = detect_database_kind(
         &db_config.to_url(),
         db_type_str.as_ref().and_then(|s: &String| {
             if s.eq_ignore_ascii_case("postgres") {
-                Some(DbKind::Postgres)
+                Some(DatabaseKind::Postgres)
             } else if s.eq_ignore_ascii_case("mysql") {
-                Some(DbKind::Mysql)
+                Some(DatabaseKind::Mysql)
             } else {
                 None
             }
@@ -87,46 +88,46 @@ pub fn build_query_sql(
     offset: usize,
 ) -> String {
     let query_str = query.filter(|s| !s.trim().is_empty());
+    let builder = SqlBuilder::new(DatabaseKind::Mysql);
     if let Some(custom_query) = query_str {
-        format!("{} LIMIT {} OFFSET {}", custom_query, limit, offset)
+        builder
+            .custom_query(custom_query)
+            .limit_offset(limit, offset)
+            .build()
     } else if limit > 0 || offset > 0 {
-        format!(
-            "SELECT {} FROM {} LIMIT {} OFFSET {}",
-            columns, table, limit, offset
-        )
+        builder
+            .select(columns, table)
+            .limit_offset(limit, offset)
+            .build()
     } else {
-        format!("SELECT {} FROM {}", columns, table)
+        builder.select(columns, table).build()
     }
 }
 
 pub fn build_select_query(columns: &str, table: &str) -> String {
-    format!("SELECT {} FROM {}", columns, table)
+    SqlBuilder::new(DatabaseKind::Mysql)
+        .select(columns, table)
+        .build()
 }
 
 /// PostgreSQL 列名加双引号，防止保留字冲突
 pub fn quote_pg_columns(columns: &str) -> String {
-    columns
-        .split(',')
-        .map(|c| format!("\"{}\"", c.trim()))
-        .collect::<Vec<_>>()
-        .join(", ")
+    SqlBuilder::new(DatabaseKind::Postgres).column_list(columns)
 }
 
-pub fn build_select_query_for(columns: &str, table: &str, db_kind: DbKind) -> String {
-    let cols = match db_kind {
-        DbKind::Postgres => quote_pg_columns(columns),
-        DbKind::Mysql => columns.to_string(),
-    };
-    format!("SELECT {} FROM {}", cols, table)
+pub fn build_select_query_for(columns: &str, table: &str, database_kind: DatabaseKind) -> String {
+    SqlBuilder::new(database_kind)
+        .select(columns, table)
+        .build()
 }
 
-/// Convert option string to DbKind
-pub fn dbkind_from_opt_str(s: &Option<String>) -> Option<DbKind> {
+/// Convert option string to DatabaseKind
+pub fn database_kind_from_opt_str(s: &Option<String>) -> Option<DatabaseKind> {
     s.as_ref().and_then(|v| {
         if v.eq_ignore_ascii_case("postgres") {
-            Some(DbKind::Postgres)
+            Some(DatabaseKind::Postgres)
         } else if v.eq_ignore_ascii_case("mysql") {
-            Some(DbKind::Mysql)
+            Some(DatabaseKind::Mysql)
         } else {
             None
         }

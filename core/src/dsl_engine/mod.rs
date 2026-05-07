@@ -31,7 +31,8 @@ mod tests {
         ];
 
         println!("--- 1. 初始化引擎 ---");
-        let engine = SyncEngine::new(user_config);
+        let engine = SyncEngine::new(user_config)
+            .unwrap_or_else(|e| panic!("DSL config should be valid: {}", e));
 
         let api_data_batch = vec![
             json!({ "name": "alice", "region": "CN_", "state": "active" }),
@@ -40,7 +41,9 @@ mod tests {
 
         println!("--- 2. 开始同步 ---");
         for (i, row) in api_data_batch.iter().enumerate() {
-            let target_data = engine.process_row(row);
+            let target_data = engine
+                .process_row(row)
+                .unwrap_or_else(|e| panic!("DSL row should process: {}", e));
             println!("Row {}: {:?}", i, target_data);
         }
 
@@ -67,7 +70,8 @@ mod tests {
         ];
 
         println!("--- 1. 初始化引擎 ---");
-        let engine = SyncEngine::new(user_config);
+        let engine = SyncEngine::new(user_config)
+            .unwrap_or_else(|e| panic!("DSL config should be valid: {}", e));
 
         let api_data_batch = vec![
             json!({ "flag": "1", "status": "active", "level": 8 }),
@@ -77,7 +81,9 @@ mod tests {
 
         println!("--- 2. 测试 if 函数 ---");
         for (i, row) in api_data_batch.iter().enumerate() {
-            let target_data = engine.process_row(row);
+            let target_data = engine
+                .process_row(row)
+                .unwrap_or_else(|e| panic!("DSL row should process: {}", e));
             println!("Row {}: {:?}", i, target_data);
         }
 
@@ -94,7 +100,8 @@ mod tests {
         ];
 
         println!("--- 1. 初始化引擎 ---");
-        let engine = SyncEngine::new(user_config);
+        let engine = SyncEngine::new(user_config)
+            .unwrap_or_else(|e| panic!("DSL config should be valid: {}", e));
 
         let api_data_batch = vec![
             json!({ "score": 95 }),
@@ -105,7 +112,9 @@ mod tests {
 
         println!("--- 2. 测试嵌套 if-else ---");
         for (i, row) in api_data_batch.iter().enumerate() {
-            let target_data = engine.process_row(row);
+            let target_data = engine
+                .process_row(row)
+                .unwrap_or_else(|e| panic!("DSL row should process: {}", e));
             println!("Row {}: {:?}", i, target_data);
         }
 
@@ -131,7 +140,8 @@ mod tests {
             ), // 判断是否成年
         ];
         println!("--- 1. 初始化引擎 ---");
-        let engine = SyncEngine::new(user_config);
+        let engine = SyncEngine::new(user_config)
+            .unwrap_or_else(|e| panic!("DSL config should be valid: {}", e));
         // 模拟从 API 获取的 3 条数据
         let api_data_list = vec![
             json!({ "name": "Alice", "age": 25, "sex": "F" }),
@@ -142,7 +152,9 @@ mod tests {
         println!("--- 2. 处理并转换 list 数据 ---");
         let mut results = Vec::new();
         for (i, row) in api_data_list.iter().enumerate() {
-            let processed_data = engine.process_row(row);
+            let processed_data = engine
+                .process_row(row)
+                .unwrap_or_else(|e| panic!("DSL row should process: {}", e));
             println!("Row {}: {:?}", i, processed_data);
             results.push(processed_data);
         }

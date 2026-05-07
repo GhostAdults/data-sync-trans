@@ -6,10 +6,11 @@ use super::control::{
 };
 use super::cron::CronTracker;
 use super::repl::ReplLoop;
-use super::task_slot::TaskSlot;
+use super::task_slot::{TaskPhase, TaskSlot};
 use crate::core::runner::{start_task, RunStatus};
 use anyhow::Result;
 use relus_common::job_config::{JobConfig, SyncMode};
+use std::any::Any;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -22,7 +23,7 @@ const MAX_CONCURRENCY: usize = 64;
 
 pub struct TaskScheduler {
     slots: HashMap<String, TaskSlot>,
-    configs: HashMap<String, (Arc<JobConfig>, bool)>,
+    configs: HashMap<String, (Arc<JobConfig>, bool, String)>,
     done_rx: mpsc::Receiver<TaskDoneEvent>,
     done_tx: mpsc::Sender<TaskDoneEvent>,
     cmd_rx: mpsc::Receiver<SchedulerCommand>,
@@ -145,8 +146,8 @@ impl TaskScheduler {
                 reply,
             } => {
                 let result = match load_job_config_from_path(&path) {
-                    Ok((job_id, config, schedule)) => self
-                        .submit_task(job_id.clone(), config, schedule)
+                    Ok((job_name, config, schedule)) => self
+                        .submit_task(job_name.clone(), config, schedule)
                         .map(|id| SchedulerResponse::TaskSubmitted { job_id: id })
                         .map_err(map_submit_error),
                     Err(err) => Err(err),
@@ -195,20 +196,14 @@ impl TaskScheduler {
     /// 提交任务（程序启动时调用）
     pub fn submit_task(
         &mut self,
-        job_id: String,
+        job_name: String,
         config: Arc<JobConfig>,
         schedule: Schedule,
     ) -> Result<String> {
-        if self.slots.contains_key(&job_id) || self.cron_tracker.get_schedule(&job_id).is_some() {
-            return Err(anyhow::Error::new(SchedulerError::JobAlreadyExists {
-                job_id: job_id.clone(),
-            }));
-        }
-
         let running = self
             .slots
             .values()
-            .filter(|s| matches!(s.phase, super::task_slot::TaskPhase::Running))
+            .filter(|s| matches!(s.phase, TaskPhase::Running))
             .count();
         if running >= MAX_CONCURRENCY {
             return Err(anyhow::Error::new(SchedulerError::MaxConcurrencyReached {
@@ -217,17 +212,26 @@ impl TaskScheduler {
             }));
         }
 
+        if let Some(existing) = self.active_job_for_name(&job_name) {
+            return Err(anyhow::Error::new(SchedulerError::JobAlreadyExists {
+                job_id: existing,
+            }));
+        }
+
         let is_cdc = config.sync_mode == Some(SyncMode::Incremental);
-        self.configs
-            .insert(job_id.clone(), (config.clone(), is_cdc));
+        let job_id = self.next_run_job_id(&job_name);
+        self.configs.insert(
+            job_id.clone(),
+            (Arc::clone(&config), is_cdc, job_name.clone()),
+        );
 
         match &schedule {
             Schedule::Immediate => {
-                self.spawn_task(job_id.clone(), config, is_cdc);
+                self.spawn_task(job_id.clone(), job_name, config, is_cdc);
             }
             Schedule::Once(_) | Schedule::Cron(_) => {
                 if is_cdc {
-                    self.spawn_task(job_id.clone(), config, true);
+                    self.spawn_task(job_id.clone(), job_name, config, true);
                 } else {
                     self.cron_tracker.register(job_id.clone(), schedule);
                     info!("[TaskScheduler] job '{}' scheduled", job_id);
@@ -239,7 +243,7 @@ impl TaskScheduler {
 
     async fn fire_cron_job(&mut self, job_id: &str) {
         if let Some(slot) = self.slots.get(job_id) {
-            if matches!(slot.phase, super::task_slot::TaskPhase::Running) {
+            if matches!(slot.phase, TaskPhase::Running) {
                 warn!("[TaskScheduler] cron job '{}' still running, skip", job_id);
                 if let Some(schedule) = self.cron_tracker.get_schedule(job_id).cloned() {
                     self.cron_tracker.register(job_id.to_string(), schedule);
@@ -248,8 +252,8 @@ impl TaskScheduler {
             }
         }
 
-        let (config, is_cdc) = match self.configs.get(job_id) {
-            Some((c, cdc)) => (c.clone(), *cdc),
+        let (config, is_cdc, job_name) = match self.configs.get(job_id) {
+            Some((c, cdc, name)) => (Arc::clone(c), *cdc, name.clone()),
             None => {
                 warn!("[TaskScheduler] cron job '{}' has no saved config", job_id);
                 return;
@@ -257,30 +261,26 @@ impl TaskScheduler {
         };
 
         info!("[TaskScheduler] cron job '{}' fired", job_id);
-        self.spawn_task(job_id.to_string(), config, is_cdc);
+        self.spawn_task(job_id.to_string(), job_name, config, is_cdc);
     }
 
-    fn spawn_task(&mut self, job_id: String, config: Arc<JobConfig>, is_cdc: bool) {
+    fn spawn_task(
+        &mut self,
+        job_id: String,
+        job_name: String,
+        config: Arc<JobConfig>,
+        is_cdc: bool,
+    ) {
         let cancel_token = CancellationToken::new();
         let done_tx = self.done_tx.clone();
         let id = job_id.clone();
         let token_clone = cancel_token.clone();
 
         tokio::spawn(async move {
-            let result = start_task(config, token_clone).await;
-            let done_result = match result {
-                Ok(r) => match r.status {
-                    RunStatus::Success | RunStatus::Partial => TaskDoneResult::Success {
-                        records_read: r.stats.records_read,
-                        records_written: r.stats.records_written,
-                        elapsed_secs: r.stats.elapsed_secs,
-                    },
-                    RunStatus::Shutdown => TaskDoneResult::Cancelled,
-                    RunStatus::Failed => {
-                        TaskDoneResult::Failed(r.error.unwrap_or_else(|| "unknown".to_string()))
-                    }
-                },
-                Err(e) => TaskDoneResult::Failed(e.to_string()),
+            let run_handle = tokio::spawn(async move { start_task(config, token_clone).await });
+            let done_result = match run_handle.await {
+                Ok(result) => task_result_to_done(result),
+                Err(error) => TaskDoneResult::Failed(join_error_message(error)),
             };
             let _ = done_tx
                 .send(TaskDoneEvent {
@@ -291,7 +291,7 @@ impl TaskScheduler {
                 .await;
         });
 
-        let slot = TaskSlot::new(job_id.clone(), is_cdc, None, cancel_token);
+        let slot = TaskSlot::new(job_id.clone(), job_name, is_cdc, None, cancel_token);
         self.slots.insert(job_id.clone(), slot);
         info!("[TaskScheduler] job '{}' spawned (cdc={})", job_id, is_cdc);
     }
@@ -315,7 +315,7 @@ impl TaskScheduler {
         };
 
         if let Some(slot) = self.slots.get_mut(job_id) {
-            let was_running = matches!(slot.phase, super::task_slot::TaskPhase::Running);
+            let was_running = matches!(slot.phase, TaskPhase::Running);
             slot.update_from_done(done.result);
 
             info!(
@@ -345,7 +345,7 @@ impl TaskScheduler {
         let running_count = self
             .slots
             .values()
-            .filter(|s| matches!(s.phase, super::task_slot::TaskPhase::Running))
+            .filter(|s| matches!(s.phase, TaskPhase::Running))
             .count();
 
         if running_count == 0 {
@@ -364,7 +364,7 @@ impl TaskScheduler {
                         }
                     }
                     let still_running = self.slots.values()
-                        .any(|s| matches!(s.phase, super::task_slot::TaskPhase::Running));
+                        .any(|s| matches!(s.phase, TaskPhase::Running));
                     if !still_running {
                         break;
                     }
@@ -397,6 +397,98 @@ impl TaskScheduler {
             }
         }
         tasks
+    }
+
+    fn active_job_for_name(&self, job_name: &str) -> Option<String> {
+        self.slots
+            .values()
+            .find(|slot| slot.job_name == job_name && matches!(slot.phase, TaskPhase::Running))
+            .map(|slot| slot.job_id.clone())
+    }
+
+    fn next_run_job_id(&self, job_name: &str) -> String {
+        let base = sanitize_job_id_base(job_name);
+        let now = chrono::Utc::now().format("%Y%m%d%H%M%S%3f");
+        let candidate = format!("{}-{}", base, now);
+        if !self.slots.contains_key(&candidate)
+            && self.cron_tracker.get_schedule(&candidate).is_none()
+        {
+            return candidate;
+        }
+
+        let mut seq = 1usize;
+        loop {
+            let candidate = format!("{}-{}-{}", base, now, seq);
+            if !self.slots.contains_key(&candidate)
+                && self.cron_tracker.get_schedule(&candidate).is_none()
+            {
+                return candidate;
+            }
+            seq += 1;
+        }
+    }
+}
+
+fn task_result_to_done(result: Result<crate::core::runner::RunResult>) -> TaskDoneResult {
+    match result {
+        Ok(r) => match r.status {
+            RunStatus::Success | RunStatus::Partial => TaskDoneResult::Success {
+                records_read: r.stats.records_read,
+                records_written: r.stats.records_written,
+                elapsed_secs: r.stats.elapsed_secs,
+            },
+            RunStatus::Shutdown => TaskDoneResult::Cancelled,
+            RunStatus::Failed => {
+                TaskDoneResult::Failed(r.error.unwrap_or_else(|| "unknown".to_string()))
+            }
+        },
+        Err(e) => TaskDoneResult::Failed(e.to_string()),
+    }
+}
+
+fn join_error_message(error: tokio::task::JoinError) -> String {
+    if error.is_panic() {
+        return format!(
+            "task panicked: {}",
+            panic_payload_message(error.into_panic())
+        );
+    }
+
+    if error.is_cancelled() {
+        return "task was cancelled".to_string();
+    }
+
+    error.to_string()
+}
+
+fn panic_payload_message(payload: Box<dyn Any + Send + 'static>) -> String {
+    if let Some(message) = payload.downcast_ref::<String>() {
+        message.clone()
+    } else if let Some(message) = payload.downcast_ref::<&'static str>() {
+        message.to_string()
+    } else {
+        "unknown panic payload".to_string()
+    }
+}
+
+fn sanitize_job_id_base(job_name: &str) -> String {
+    let base = job_name
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
+                ch
+            } else {
+                '-'
+            }
+        })
+        .collect::<String>()
+        .trim_matches('-')
+        .to_string();
+
+    if base.is_empty() {
+        "job".to_string()
+    } else {
+        base
     }
 }
 
@@ -462,5 +554,156 @@ fn print_task_done(job_id: &str, is_cdc: bool, phase: &super::task_slot::TaskPha
             }
         }
         _ => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use relus_common::data_source_config::DataSourceConfig;
+    use std::collections::BTreeMap;
+
+    fn scheduler() -> TaskScheduler {
+        let dir = tempfile::tempdir().expect("temp dir");
+        TaskScheduler::new(dir.path().join("checkpoints.redb")).expect("scheduler")
+    }
+
+    fn job_config(sync_mode: Option<SyncMode>) -> Arc<JobConfig> {
+        let source = DataSourceConfig {
+            name: "source".to_string(),
+            source_type: "api".to_string(),
+            is_table_mode: true,
+            query_sql: None,
+            writer_mode: None,
+            config: serde_json::json!({}),
+        };
+        let target = DataSourceConfig {
+            name: "target".to_string(),
+            source_type: "api".to_string(),
+            is_table_mode: true,
+            query_sql: None,
+            writer_mode: None,
+            config: serde_json::json!({}),
+        };
+
+        Arc::new(JobConfig {
+            source,
+            target,
+            column_mapping: BTreeMap::new(),
+            column_types: None,
+            sync_mode,
+            batch_size: None,
+            channel_buffer_size: None,
+            job_id: None,
+            schedule: None,
+        })
+    }
+
+    #[test]
+    fn submitted_job_id_is_runtime_instance_not_raw_job_name() {
+        let mut scheduler = scheduler();
+
+        let job_id = scheduler
+            .submit_task(
+                "daily-job".to_string(),
+                job_config(Some(SyncMode::Fullsnapshot)),
+                Schedule::Cron("*/5 * * * *".to_string()),
+            )
+            .expect("submit");
+
+        assert_ne!(job_id, "daily-job");
+        assert!(job_id.starts_with("daily-job-"));
+    }
+
+    #[test]
+    fn completed_job_name_can_be_submitted_again() {
+        let mut scheduler = scheduler();
+        let completed_id = "daily-job-previous".to_string();
+        let cancel_token = CancellationToken::new();
+        let mut slot = TaskSlot::new(
+            completed_id.clone(),
+            "daily-job".to_string(),
+            false,
+            None,
+            cancel_token,
+        );
+        slot.phase = TaskPhase::Completed(super::super::cmd::TaskStats {
+            records_read: 1,
+            records_written: 1,
+            records_failed: 0,
+            elapsed_secs: 1.0,
+        });
+        scheduler.slots.insert(completed_id.clone(), slot);
+
+        let new_id = scheduler
+            .submit_task(
+                "daily-job".to_string(),
+                job_config(Some(SyncMode::Fullsnapshot)),
+                Schedule::Cron("*/5 * * * *".to_string()),
+            )
+            .expect("resubmit completed job name");
+
+        assert_ne!(new_id, completed_id);
+        assert!(new_id.starts_with("daily-job-"));
+    }
+
+    #[test]
+    fn active_cdc_with_same_job_name_must_be_cancelled_first() {
+        let mut scheduler = scheduler();
+        let active_id = "cdc-job-active".to_string();
+        let slot = TaskSlot::new(
+            active_id.clone(),
+            "cdc-job".to_string(),
+            true,
+            None,
+            CancellationToken::new(),
+        );
+        scheduler.slots.insert(active_id.clone(), slot);
+
+        let err = scheduler
+            .submit_task(
+                "cdc-job".to_string(),
+                job_config(Some(SyncMode::Incremental)),
+                Schedule::Cron("*/5 * * * *".to_string()),
+            )
+            .expect_err("active CDC should conflict");
+
+        let scheduler_error = err
+            .downcast_ref::<SchedulerError>()
+            .expect("scheduler error");
+        assert_eq!(
+            scheduler_error,
+            &SchedulerError::JobAlreadyExists { job_id: active_id }
+        );
+    }
+
+    #[test]
+    fn running_job_name_cannot_be_submitted_again() {
+        let mut scheduler = scheduler();
+        let active_id = "daily-job-active".to_string();
+        let slot = TaskSlot::new(
+            active_id.clone(),
+            "daily-job".to_string(),
+            false,
+            None,
+            CancellationToken::new(),
+        );
+        scheduler.slots.insert(active_id.clone(), slot);
+
+        let err = scheduler
+            .submit_task(
+                "daily-job".to_string(),
+                job_config(Some(SyncMode::Fullsnapshot)),
+                Schedule::Cron("*/5 * * * *".to_string()),
+            )
+            .expect_err("running job should conflict");
+
+        let scheduler_error = err
+            .downcast_ref::<SchedulerError>()
+            .expect("scheduler error");
+        assert_eq!(
+            scheduler_error,
+            &SchedulerError::JobAlreadyExists { job_id: active_id }
+        );
     }
 }

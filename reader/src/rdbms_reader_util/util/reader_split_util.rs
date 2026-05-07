@@ -3,8 +3,9 @@ use crate::rdbms_reader_util::rdbms_reader::RdbmsJob;
 use crate::{ReadTask, SplitReaderResult, StreamMode};
 use anyhow::Result;
 use relus_common::constant::key::SPLIT_FACTOR;
-use relus_connector_rdbms::pool::{ColumnValue, DbKind, RdbmsPool};
-use relus_connector_rdbms::util::{build_select_query_for, get_pool_from_config};
+use relus_connector_rdbms::pool::{ColumnValue, DatabaseKind, RdbmsPool};
+use relus_connector_rdbms::sql_builder::{PkRangeSelect, SqlBuilder};
+use relus_connector_rdbms::util::get_pool_from_config;
 use serde_json::Value as JsonValue;
 use tracing::{info, warn};
 
@@ -51,9 +52,9 @@ pub async fn do_split(rdbms_job: &RdbmsJob, advice_number: usize) -> SplitReader
         })
         .unwrap_or_default();
 
-    let db_kind = match pool.as_ref() {
-        RdbmsPool::Postgres(_) => DbKind::Postgres,
-        RdbmsPool::Mysql(_) => DbKind::Mysql,
+    let database_kind = match pool.as_ref() {
+        RdbmsPool::Postgres(_) => DatabaseKind::Postgres,
+        RdbmsPool::Mysql(_) => DatabaseKind::Mysql,
     };
 
     let mut tasks = Vec::new();
@@ -80,7 +81,7 @@ pub async fn do_split(rdbms_job: &RdbmsJob, advice_number: usize) -> SplitReader
             // 进行单表的切分
             match split_by_pk(
                 &pool,
-                db_kind,
+                database_kind,
                 config,
                 split_pk,
                 each_table_should_split,
@@ -93,7 +94,7 @@ pub async fn do_split(rdbms_job: &RdbmsJob, advice_number: usize) -> SplitReader
                     warn!("主键切分失败，回退到 LIMIT/OFFSET 模式: {:?}", e);
                     tasks = split_by_limit_offset(
                         config,
-                        db_kind,
+                        database_kind,
                         each_table_should_split,
                         total_records,
                         &conns,
@@ -101,7 +102,7 @@ pub async fn do_split(rdbms_job: &RdbmsJob, advice_number: usize) -> SplitReader
                 }
             }
         } else {
-            tasks = build_single_task(config, db_kind, &conns);
+            tasks = build_single_task(config, database_kind, &conns);
         }
         // 直接使用sql 构建
     } else if let Some(sqls) = &config.query_sql {
@@ -109,7 +110,7 @@ pub async fn do_split(rdbms_job: &RdbmsJob, advice_number: usize) -> SplitReader
             if sql.trim().is_empty() {
                 continue;
             }
-            let conn = conns.get(i).cloned().unwrap_or_else(|| JsonValue::Null);
+            let conn = conns.get(i).cloned().unwrap_or(JsonValue::Null);
             tasks.push(ReadTask {
                 task_id: i,
                 conn,
@@ -149,16 +150,13 @@ fn calculate_each_table_split_number(advice_number: usize, table_number: usize) 
 
 fn build_single_task(
     config: &crate::RdbmsConfig,
-    db_kind: DbKind,
+    database_kind: DatabaseKind,
     conns: &[JsonValue],
 ) -> Vec<ReadTask> {
-    let query_sql = match &config.where_clause {
-        Some(w) => format!(
-            "SELECT {} FROM {} WHERE {}",
-            config.columns, config.table, w
-        ),
-        None => build_select_query_for(config.columns.as_str(), config.table.as_str(), db_kind),
-    };
+    let query_sql = SqlBuilder::new(database_kind)
+        .select(&config.columns, &config.table)
+        .where_raw_opt(config.where_clause.as_deref())
+        .build();
 
     let conn = conns.first().cloned().unwrap_or_else(|| JsonValue::Null);
     vec![ReadTask {
@@ -172,7 +170,7 @@ fn build_single_task(
 
 async fn split_by_pk(
     pool: &RdbmsPool,
-    db_kind: DbKind,
+    database_kind: DatabaseKind,
     config: &crate::RdbmsConfig,
     split_pk: &str,
     shard_count: usize,
@@ -180,14 +178,15 @@ async fn split_by_pk(
 ) -> Result<Vec<ReadTask>> {
     let (min_cv, max_cv) = get_pk_range(
         pool,
+        database_kind,
         &config.table,
         split_pk,
         config.where_clause.as_deref(),
     )
     .await?;
 
-    let is_numeric = min_cv.as_ref().map_or(false, |v| v.is_numeric())
-        || max_cv.as_ref().map_or(false, |v| v.is_numeric());
+    let is_numeric = min_cv.as_ref().is_some_and(|v| v.is_numeric())
+        || max_cv.as_ref().is_some_and(|v| v.is_numeric());
 
     let min_str = min_cv.and_then(|v| v.into_string());
     let max_str = max_cv.and_then(|v| v.into_string());
@@ -211,17 +210,31 @@ async fn split_by_pk(
     };
 
     for (i, range) in ranges.iter().enumerate() {
-        let query_sql = build_range_query_sql(
-            &config.table,
-            &config.columns,
-            config.where_clause.as_deref(),
-            range,
-            db_kind,
-        );
+        let builder = SqlBuilder::new(database_kind);
+        let query_sql = match range {
+            PkRange::Range { pk, min, max } => builder.pk_range_select(PkRangeSelect {
+                table: &config.table,
+                columns: &config.columns,
+                where_clause: config.where_clause.as_deref(),
+                pk,
+                min,
+                max,
+                inclusive_end: false,
+            }),
+            PkRange::Inclusive { pk, min, max } => builder.pk_range_select(PkRangeSelect {
+                table: &config.table,
+                columns: &config.columns,
+                where_clause: config.where_clause.as_deref(),
+                pk,
+                min,
+                max,
+                inclusive_end: true,
+            }),
+        };
         let conn = conns
             .get(i % conns.len().max(1))
             .cloned()
-            .unwrap_or_else(|| JsonValue::Null);
+            .unwrap_or(JsonValue::Null);
         tasks.push(ReadTask {
             task_id: i,
             conn,
@@ -231,12 +244,11 @@ async fn split_by_pk(
         });
     }
 
-    let null_sql = build_null_pk_query_sql(
+    let null_sql = SqlBuilder::new(database_kind).null_pk_select(
         &config.table,
         &config.columns,
         config.where_clause.as_deref(),
         split_pk,
-        db_kind,
     );
     let conn = conns.first().cloned().unwrap_or_else(|| JsonValue::Null);
     tasks.push(ReadTask {
@@ -252,7 +264,7 @@ async fn split_by_pk(
 
 fn split_by_limit_offset(
     config: &crate::RdbmsConfig,
-    db_kind: DbKind,
+    database_kind: DatabaseKind,
     shard_count: usize,
     total_records: usize,
     conns: &[JsonValue],
@@ -269,18 +281,17 @@ fn split_by_limit_offset(
         let offset = i * shard_size;
         let remaining = total_records.saturating_sub(offset);
         let limit = shard_size.min(remaining);
-        let query_sql = build_limit_offset_sql(
+        let query_sql = SqlBuilder::new(database_kind).limit_offset_select(
             &config.table,
             &config.columns,
             config.where_clause.as_deref(),
             limit,
             offset,
-            db_kind,
         );
         let conn = conns
             .get(i % conns.len().max(1))
             .cloned()
-            .unwrap_or_else(|| JsonValue::Null);
+            .unwrap_or(JsonValue::Null);
         tasks.push(ReadTask {
             task_id: i,
             conn,
@@ -308,19 +319,12 @@ pub enum PkRange {
 
 async fn get_pk_range(
     pool: &RdbmsPool,
+    database_kind: DatabaseKind,
     table: &str,
     split_pk: &str,
     where_clause: Option<&str>,
 ) -> Result<(Option<ColumnValue>, Option<ColumnValue>)> {
-    let where_cond = match where_clause {
-        Some(w) => format!(" WHERE ({}) AND {} IS NOT NULL", w, split_pk),
-        None => format!(" WHERE {} IS NOT NULL", split_pk),
-    };
-    let sql = format!(
-        "SELECT MIN({}), MAX({}) FROM {}{}",
-        split_pk, split_pk, table, where_cond
-    );
-
+    let sql = SqlBuilder::new(database_kind).pk_min_max(table, split_pk, where_clause);
     pool.executor().fetch_column_pair(&sql).await
 }
 
@@ -378,70 +382,5 @@ fn split_by_string_pk(
             min: min_val.to_string(),
             max: max_val.to_string(),
         }]
-    }
-}
-
-fn build_range_query_sql(
-    table: &str,
-    columns: &str,
-    where_clause: Option<&str>,
-    range: &PkRange,
-    db_kind: DbKind,
-) -> String {
-    let base = build_select_query_for(columns, table, db_kind);
-    let range_cond = match range {
-        PkRange::Range { pk, min, max } => {
-            let min_q = quote_string_value(min);
-            let max_q = quote_string_value(max);
-            format!("{} >= {} AND {} < {}", pk, min_q, pk, max_q)
-        }
-        PkRange::Inclusive { pk, min, max } => {
-            let min_q = quote_string_value(min);
-            let max_q = quote_string_value(max);
-            format!("{} >= {} AND {} <= {}", pk, min_q, pk, max_q)
-        }
-    };
-
-    match where_clause {
-        Some(w) => format!("{} WHERE ({}) AND ({})", base, w, range_cond),
-        None => format!("{} WHERE {}", base, range_cond),
-    }
-}
-
-// todo 防止出现单引号导致的SQL语法错误，应该对字符串进行转义处理
-fn quote_string_value(s: &str) -> String {
-    let escaped = s.replace('\'', "''");
-    format!("'{}'", escaped)
-}
-
-fn build_null_pk_query_sql(
-    table: &str,
-    columns: &str,
-    where_clause: Option<&str>,
-    split_pk: &str,
-    db_kind: DbKind,
-) -> String {
-    let base = build_select_query_for(columns, table, db_kind);
-    let null_cond = format!("{} IS NULL", split_pk);
-
-    match where_clause {
-        Some(w) => format!("{} WHERE ({}) AND ({})", base, w, null_cond),
-        None => format!("{} WHERE {}", base, null_cond),
-    }
-}
-
-fn build_limit_offset_sql(
-    table: &str,
-    columns: &str,
-    where_clause: Option<&str>,
-    limit: usize,
-    offset: usize,
-    db_kind: DbKind,
-) -> String {
-    let base = build_select_query_for(columns, table, db_kind);
-
-    match where_clause {
-        Some(w) => format!("{} WHERE {} LIMIT {} OFFSET {}", base, w, limit, offset),
-        None => format!("{} LIMIT {} OFFSET {}", base, limit, offset),
     }
 }

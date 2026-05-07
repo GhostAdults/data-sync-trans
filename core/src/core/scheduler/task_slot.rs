@@ -25,6 +25,7 @@ impl TaskPhase {
 /// 任务运行时槽位
 pub struct TaskSlot {
     pub job_id: String,
+    pub job_name: String,
     pub phase: TaskPhase,
     pub cancel_token: CancellationToken,
     pub started_at: Instant,
@@ -35,12 +36,14 @@ pub struct TaskSlot {
 impl TaskSlot {
     pub fn new(
         job_id: String,
+        job_name: String,
         is_cdc: bool,
         schedule: Option<Schedule>,
         cancel_token: CancellationToken,
     ) -> Self {
         Self {
             job_id,
+            job_name,
             phase: TaskPhase::Running,
             cancel_token,
             started_at: Instant::now(),

@@ -13,7 +13,7 @@ use sqlx::{MySqlPool, PgPool};
 use std::sync::OnceLock;
 use std::time::Duration;
 
-use super::util::{dbkind_from_opt_str, DbParams};
+use super::util::{database_kind_from_opt_str, DbParams};
 use relus_common::types::UnifiedValue;
 
 // 向后兼容的类型别名
@@ -22,7 +22,7 @@ type TypedVal = UnifiedValue;
 
 /// Database type enumeration
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum, Hash)]
-pub enum DbKind {
+pub enum DatabaseKind {
     Postgres,
     Mysql,
 }
@@ -37,7 +37,7 @@ pub enum RdbmsPool {
 /// Database pool configuration
 #[derive(Clone, Hash, PartialEq, Eq, Debug)]
 pub struct PoolConfig {
-    pub kind: DbKind,
+    pub kind: DatabaseKind,
     pub url: String,
     pub max_conns: u32,
     pub timeout_secs: Option<u64>,
@@ -48,7 +48,7 @@ static DB_POOLS: OnceLock<DashMap<PoolConfig, RdbmsPool>> = OnceLock::new();
 async fn create_pool(cfg: &PoolConfig) -> Result<RdbmsPool> {
     let timeout = Duration::from_secs(cfg.timeout_secs.unwrap_or(30));
     match cfg.kind {
-        DbKind::Postgres => {
+        DatabaseKind::Postgres => {
             let pool = PgPoolOptions::new()
                 .max_connections(cfg.max_conns)
                 .acquire_timeout(timeout)
@@ -56,7 +56,7 @@ async fn create_pool(cfg: &PoolConfig) -> Result<RdbmsPool> {
                 .await?;
             Ok(RdbmsPool::Postgres(pool))
         }
-        DbKind::Mysql => {
+        DatabaseKind::Mysql => {
             let pool = MySqlPoolOptions::new()
                 .max_connections(cfg.max_conns)
                 .acquire_timeout(timeout)
@@ -71,7 +71,7 @@ async fn create_pool(cfg: &PoolConfig) -> Result<RdbmsPool> {
 /// 如果存在相同配置的连接池则返回，否则创建新的连接池并缓存
 pub async fn get_db_pool(
     url: &str,
-    kind: DbKind,
+    kind: DatabaseKind,
     max_conns: u32,
     timeout_secs: Option<u64>,
 ) -> Result<RdbmsPool> {
@@ -92,14 +92,14 @@ pub async fn get_db_pool(
 }
 
 /// Detect database type from URL or explicit option
-pub fn detect_db_kind(url: &str, explicit: Option<DbKind>) -> Result<DbKind> {
+pub fn detect_database_kind(url: &str, explicit: Option<DatabaseKind>) -> Result<DatabaseKind> {
     if let Some(k) = explicit {
         return Ok(k);
     }
     if url.starts_with("postgres://") || url.starts_with("postgresql://") {
-        Ok(DbKind::Postgres)
+        Ok(DatabaseKind::Postgres)
     } else if url.starts_with("mysql://") {
-        Ok(DbKind::Mysql)
+        Ok(DatabaseKind::Mysql)
     } else {
         anyhow::bail!(
             "无法识别数据库类型，需提供 db_type 或使用以 postgres:// 或 mysql:// 开头的连接串"
@@ -110,7 +110,7 @@ pub fn detect_db_kind(url: &str, explicit: Option<DbKind>) -> Result<DbKind> {
 /// Get pool from DbParams query
 pub async fn get_pool_from_query<T: DbParams>(q: &T) -> Result<RdbmsPool> {
     let db_url = q.resolve_url()?;
-    let kind = detect_db_kind(&db_url, dbkind_from_opt_str(&q.resolve_type()))?;
+    let kind = detect_database_kind(&db_url, database_kind_from_opt_str(&q.resolve_type()))?;
     get_db_pool(&db_url, kind, 5, None).await
 }
 
@@ -140,7 +140,7 @@ impl ColumnValue {
 
 /// Database executor trait for common operations
 #[async_trait]
-pub trait DbExecutor: Send + Sync {
+pub trait DatabaseExecutor: Send + Sync {
     // 返回两列字符串的查询结果
     async fn fetch_string_pair(&self, sql: &str) -> Result<(Option<String>, Option<String>)>;
     async fn fetch_optional_string(&self, sql: &str) -> Result<Option<String>>;
@@ -195,7 +195,7 @@ pub struct PgExecutorRef {
 }
 
 #[async_trait]
-impl DbExecutor for PgExecutorRef {
+impl DatabaseExecutor for PgExecutorRef {
     async fn fetch_string_pair(&self, sql: &str) -> Result<(Option<String>, Option<String>)> {
         let row: (Option<String>, Option<String>) =
             sqlx::query_as(sql).fetch_one(&self.pool).await?;
@@ -330,7 +330,7 @@ pub struct MySqlExecutorRef {
 }
 
 #[async_trait]
-impl DbExecutor for MySqlExecutorRef {
+impl DatabaseExecutor for MySqlExecutorRef {
     async fn fetch_string_pair(&self, sql: &str) -> Result<(Option<String>, Option<String>)> {
         let row: (Option<String>, Option<String>) =
             sqlx::query_as(sql).fetch_one(&self.pool).await?;
@@ -432,7 +432,7 @@ fn bind_typed_val_my<'q>(
 
 impl RdbmsPool {
     /// Get executor for database operations
-    pub fn executor(&self) -> Box<dyn DbExecutor> {
+    pub fn executor(&self) -> Box<dyn DatabaseExecutor> {
         match self {
             RdbmsPool::Postgres(p) => Box::new(PgExecutorRef { pool: p.clone() }),
             RdbmsPool::Mysql(p) => Box::new(MySqlExecutorRef { pool: p.clone() }),

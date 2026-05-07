@@ -81,9 +81,10 @@ impl fmt::Display for TypeKind {
 /// - 复合类型：Json, Bytes, Array
 /// - Option 变体：OptI64, OptF64, OptBool, OptDecimal, OptDateTime（兼容现有代码）
 /// - 空值：Null
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub enum UnifiedValue {
     /// 空值
+    #[default]
     Null,
     /// 布尔值
     Bool(bool),
@@ -278,12 +279,6 @@ impl UnifiedValue {
             UnifiedValue::OptDateTime(None) => UnifiedValue::Null,
             other => other.clone(),
         }
-    }
-}
-
-impl Default for UnifiedValue {
-    fn default() -> Self {
-        UnifiedValue::Null
     }
 }
 

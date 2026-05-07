@@ -45,7 +45,7 @@ impl CronTracker {
         self.entries.values().filter_map(|e| e.next_fire).min()
     }
 
-    /// 取出到期任务 ID 列表，并重新计算下次触发时��
+    /// 取出到期任务 ID 列表，并重新计算下次触发时TIME
     pub fn pop_due(&mut self, now: Instant) -> Vec<String> {
         let due: Vec<String> = self
             .entries
@@ -53,7 +53,7 @@ impl CronTracker {
             .filter_map(|(id, entry)| {
                 entry
                     .next_fire
-                    .map_or(false, |f| f <= now)
+                    .is_some_and(|f| f <= now)
                     .then(|| id.clone())
             })
             .collect();
@@ -121,6 +121,12 @@ impl CronTracker {
         let next = cron_schedule.upcoming(Utc).next()?;
         let duration = (next - Utc::now()).to_std().ok()?;
         Some(Instant::now() + duration)
+    }
+}
+
+impl Default for CronTracker {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

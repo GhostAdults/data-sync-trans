@@ -9,9 +9,10 @@ use crate::{DataReaderJob, DataReaderTask, JsonStream, ReadTask, SplitReaderResu
 use anyhow::Result;
 use futures::{stream, StreamExt};
 use relus_common::JobConfig;
-use relus_connector_rdbms::pool::RdbmsPool;
+use relus_connector_rdbms::pool::{DatabaseKind, RdbmsPool};
 use relus_connector_rdbms::schema::{MetadataDiscoverer, RdbmsDiscoverer, TableSchema};
-use relus_connector_rdbms::util::{build_query_sql, get_pool_from_config};
+use relus_connector_rdbms::sql_builder::SqlBuilder;
+use relus_connector_rdbms::util::get_pool_from_config;
 use serde_json::Value as JsonValue;
 use sqlx::{Column, Row};
 use std::collections::BTreeMap;
@@ -109,6 +110,7 @@ impl DataReaderTask for RdbmsReader {
         let sql = match &slice_task.query_sql {
             Some(query) => query.clone(),
             None => {
+                let builder = SqlBuilder::new(database_kind_from_pool(&pool));
                 let query_str = self
                     .job
                     .config
@@ -116,13 +118,21 @@ impl DataReaderTask for RdbmsReader {
                     .as_ref()
                     .and_then(|v| v.first())
                     .map(|s| s.as_str());
-                build_query_sql(
-                    &self.job.config.columns,
-                    self.job.config.table.as_str(),
-                    query_str,
-                    slice_task.limit,
-                    slice_task.offset,
-                )
+                if let Some(query) = query_str.filter(|query| !query.trim().is_empty()) {
+                    builder
+                        .custom_query(query)
+                        .limit_offset(slice_task.limit, slice_task.offset)
+                        .build()
+                } else {
+                    let select = builder.select(&self.job.config.columns, &self.job.config.table);
+                    if slice_task.limit > 0 || slice_task.offset > 0 {
+                        select
+                            .limit_offset(slice_task.limit, slice_task.offset)
+                            .build()
+                    } else {
+                        select.build()
+                    }
+                }
             }
         };
 
@@ -231,11 +241,7 @@ pub async fn count_total_records(
     table: &str,
     query: Option<&str>,
 ) -> Result<usize> {
-    let sql = if let Some(custom_query) = query {
-        format!("SELECT COUNT(*) FROM ({}) AS subquery", custom_query)
-    } else {
-        format!("SELECT COUNT(*) FROM {}", table)
-    };
+    let sql = SqlBuilder::new(database_kind_from_pool(pool)).count(table, query);
     let result = pool.executor().fetch_column_pair(&sql).await?;
     match result.0 {
         Some(cv) => cv
@@ -243,5 +249,12 @@ pub async fn count_total_records(
             .and_then(|s| s.parse::<usize>().ok())
             .ok_or_else(|| anyhow::anyhow!("解析记录数失败")),
         None => Ok(0),
+    }
+}
+
+fn database_kind_from_pool(pool: &RdbmsPool) -> DatabaseKind {
+    match pool {
+        RdbmsPool::Postgres(_) => DatabaseKind::Postgres,
+        RdbmsPool::Mysql(_) => DatabaseKind::Mysql,
     }
 }

@@ -5,7 +5,7 @@ use async_trait::async_trait;
 use std::sync::Arc;
 use tracing::{debug, info};
 
-use crate::pool::{DbKind, RdbmsPool};
+use crate::pool::{DatabaseKind, RdbmsPool};
 
 use super::{ColumnInfo, MetadataDiscoverer, TableSchema, TypeMapper};
 
@@ -13,20 +13,20 @@ use super::{ColumnInfo, MetadataDiscoverer, TableSchema, TypeMapper};
 pub struct RdbmsDiscoverer {
     pool: Arc<RdbmsPool>,
     table_name: String,
-    db_kind: DbKind,
+    db_kind: DatabaseKind,
     type_mapper: Box<dyn TypeMapper>,
 }
 
 impl RdbmsDiscoverer {
     pub fn new(pool: Arc<RdbmsPool>, table_name: String) -> Self {
         let db_kind = match pool.as_ref() {
-            RdbmsPool::Postgres(_) => DbKind::Postgres,
-            RdbmsPool::Mysql(_) => DbKind::Mysql,
+            RdbmsPool::Postgres(_) => DatabaseKind::Postgres,
+            RdbmsPool::Mysql(_) => DatabaseKind::Mysql,
         };
 
         let type_mapper: Box<dyn TypeMapper> = match db_kind {
-            DbKind::Postgres => Box::new(PostgresTypeMapper),
-            DbKind::Mysql => Box::new(MysqlTypeMapper),
+            DatabaseKind::Postgres => Box::new(PostgresTypeMapper),
+            DatabaseKind::Mysql => Box::new(MysqlTypeMapper),
         };
 
         Self {
@@ -171,7 +171,7 @@ impl RdbmsDiscoverer {
 
     async fn query_primary_keys(&self) -> Result<Vec<String>> {
         let sql = match self.db_kind {
-            DbKind::Postgres => format!(
+            DatabaseKind::Postgres => format!(
                 r#"
                 SELECT kcu.column_name
                 FROM information_schema.table_constraints tc
@@ -185,7 +185,7 @@ impl RdbmsDiscoverer {
                 "#,
                 self.table_name
             ),
-            DbKind::Mysql => format!(
+            DatabaseKind::Mysql => format!(
                 r#"
                 SELECT COLUMN_NAME as column_name
                 FROM information_schema.KEY_COLUMN_USAGE
@@ -239,8 +239,8 @@ impl MetadataDiscoverer for RdbmsDiscoverer {
 
         // 查询列信息
         let mut columns = match self.db_kind {
-            DbKind::Postgres => self.query_columns_postgres().await?,
-            DbKind::Mysql => self.query_columns_mysql().await?,
+            DatabaseKind::Postgres => self.query_columns_postgres().await?,
+            DatabaseKind::Mysql => self.query_columns_mysql().await?,
         };
 
         if columns.is_empty() {
@@ -257,8 +257,8 @@ impl MetadataDiscoverer for RdbmsDiscoverer {
         }
 
         let db_kind_str = match self.db_kind {
-            DbKind::Postgres => "postgres",
-            DbKind::Mysql => "mysql",
+            DatabaseKind::Postgres => "postgres",
+            DatabaseKind::Mysql => "mysql",
         };
 
         let schema = TableSchema::new(table_name.to_string(), db_kind_str.to_string())
@@ -277,17 +277,19 @@ impl MetadataDiscoverer for RdbmsDiscoverer {
 
     fn db_kind(&self) -> &str {
         match self.db_kind {
-            DbKind::Postgres => "postgres",
-            DbKind::Mysql => "mysql",
+            DatabaseKind::Postgres => "postgres",
+            DatabaseKind::Mysql => "mysql",
         }
     }
 
     async fn table_exists(&self, table_name: &str) -> Result<bool> {
         let sql = match self.db_kind {
-            DbKind::Postgres => {
+            DatabaseKind::Postgres => {
                 "SELECT 1 FROM information_schema.tables WHERE table_name = $1 LIMIT 1"
             }
-            DbKind::Mysql => "SELECT 1 FROM information_schema.TABLES WHERE TABLE_NAME = ? LIMIT 1",
+            DatabaseKind::Mysql => {
+                "SELECT 1 FROM information_schema.TABLES WHERE TABLE_NAME = ? LIMIT 1"
+            }
         };
 
         let result = match self.pool.as_ref() {
@@ -312,10 +314,10 @@ impl MetadataDiscoverer for RdbmsDiscoverer {
 
     async fn list_tables(&self) -> Result<Vec<String>> {
         let sql = match self.db_kind {
-            DbKind::Postgres => {
+            DatabaseKind::Postgres => {
                 "SELECT table_name FROM information_schema.tables WHERE table_schema = 'public'"
             }
-            DbKind::Mysql => {
+            DatabaseKind::Mysql => {
                 "SELECT TABLE_NAME as table_name FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE()"
             }
         };

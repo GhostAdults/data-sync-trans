@@ -4,18 +4,13 @@ use serde::{Deserialize, Serialize};
 use std::str::FromStr;
 
 /// 调度策略
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(tag = "type", content = "value")]
 pub enum Schedule {
+    #[default]
     Immediate,
     Once(DateTime<Utc>),
     Cron(String),
-}
-
-impl Default for Schedule {
-    fn default() -> Self {
-        Schedule::Immediate
-    }
 }
 
 impl Schedule {

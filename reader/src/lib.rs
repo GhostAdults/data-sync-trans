@@ -25,17 +25,12 @@ use std::sync::{Arc, OnceLock, RwLock};
 /// Reader 返回的原始数据流
 pub type JsonStream = Pin<Box<dyn Stream<Item = Result<JsonValue>> + Send + 'static>>;
 
-/// Stream 模式：Batch(批量，有终点) / Streaming(流式，持续监听)
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Stream 模式：Batch(批量) / Streaming(流式)
+#[derive(Debug, Clone, Default, Copy, PartialEq, Eq)]
 pub enum StreamMode {
+    #[default]
     Batch,
     Streaming,
-}
-
-impl Default for StreamMode {
-    fn default() -> Self {
-        StreamMode::Batch
-    }
 }
 
 #[derive(Debug, Clone)]

@@ -5,10 +5,8 @@
 use std::sync::Arc;
 
 use anyhow::{bail, Result};
-use relus_connector_rdbms::pool::{DbKind, RdbmsPool};
-use relus_connector_rdbms::sql_builder::{
-    execute_db_write, prepare_write_batch, validate_upsert_keys,
-};
+use relus_connector_rdbms::pool::{DatabaseKind, RdbmsPool};
+use relus_connector_rdbms::sql_builder::{execute_db_write, validate_upsert_keys, WriteRows};
 use relus_connector_rdbms::util::get_pool_from_output;
 
 use relus_common::pipeline::PipelineMessage;
@@ -94,13 +92,13 @@ pub trait RowWriter: Send + Sync {
         msg: &PipelineMessage,
         pool: &Arc<RdbmsPool>,
         config: &RdbmsConfig,
-        db_kind: DbKind,
+        database_kind: DatabaseKind,
         task: &WriteTask,
     ) -> Result<usize>;
 }
 
 /// 从 MappingRow 提取列名和行值
-fn extract_rows_from_mapping(mapped_rows: &[MappingRow]) -> (Vec<String>, Vec<Vec<UnifiedValue>>) {
+fn extract_rows_from_mapping(mapped_rows: &[MappingRow]) -> WriteRows {
     let columns: Vec<String> = mapped_rows[0].field_names().cloned().collect();
     let mut rows = Vec::with_capacity(mapped_rows.len());
     for mapped_row in mapped_rows {
@@ -114,7 +112,7 @@ fn extract_rows_from_mapping(mapped_rows: &[MappingRow]) -> (Vec<String>, Vec<Ve
         }
         rows.push(values);
     }
-    (columns, rows)
+    WriteRows::new(columns, rows)
 }
 
 /// PipelineMessage 的 RowWriter 实现
@@ -127,7 +125,7 @@ impl RowWriter for PipelineRowWriter {
         msg: &PipelineMessage,
         pool: &Arc<RdbmsPool>,
         config: &RdbmsConfig,
-        db_kind: DbKind,
+        database_kind: DatabaseKind,
         task: &WriteTask,
     ) -> Result<usize> {
         match msg {
@@ -135,15 +133,12 @@ impl RowWriter for PipelineRowWriter {
                 if rows.is_empty() {
                     return Ok(0);
                 }
-                let (columns, row_values) = extract_rows_from_mapping(rows);
-                let batch = prepare_write_batch(
-                    &columns,
-                    &row_values,
-                    &config.table,
-                    &config.key_columns,
-                    config.mode,
-                    db_kind,
-                )?;
+                let batch = extract_rows_from_mapping(rows)
+                    .table(&config.table)
+                    .key_columns(&config.key_columns)
+                    .mode(config.mode)
+                    .database_kind(database_kind)
+                    .build()?;
                 execute_db_write(&batch, pool, task.batch_size).await
             }
             PipelineMessage::ReaderFinished => {
@@ -165,9 +160,9 @@ impl DataWriterTask for RdbmsWriter {
         mut rx: mpsc::Receiver<PipelineMessage>,
     ) -> Result<usize> {
         let pool = get_pool_from_output(&self.job.original_config).await?;
-        let db_kind = match pool.as_ref() {
-            RdbmsPool::Postgres(_) => DbKind::Postgres,
-            RdbmsPool::Mysql(_) => DbKind::Mysql,
+        let database_kind = match pool.as_ref() {
+            RdbmsPool::Postgres(_) => DatabaseKind::Postgres,
+            RdbmsPool::Mysql(_) => DatabaseKind::Mysql,
         };
 
         if self.job.config.mode == WriteMode::Upsert {
@@ -181,7 +176,7 @@ impl DataWriterTask for RdbmsWriter {
             match self
                 .job
                 .writer
-                .process_message(&msg, &pool, &self.job.config, db_kind, &task)
+                .process_message(&msg, &pool, &self.job.config, database_kind, &task)
                 .await
             {
                 Ok(count) => {

@@ -165,7 +165,7 @@ pub async fn start_run(
         RecordBuilder::new(
             job_config.column_mapping.clone(),
             job_config.column_types.clone(),
-        )
+        )?
         .with_source_type(source_type),
     );
 

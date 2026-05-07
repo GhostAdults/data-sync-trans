@@ -116,7 +116,10 @@ impl SchedulerError {
         match self {
             SchedulerError::JobNotFound { job_id } => format!("Job '{}' not found.", job_id),
             SchedulerError::JobAlreadyExists { job_id } => {
-                format!("Job '{}' already exists.", job_id)
+                format!(
+                    "Job '{}' is already active. Cancel it before submitting the same job again.",
+                    job_id
+                )
             }
             SchedulerError::InvalidConfig { message } => message.clone(),
             SchedulerError::MaxConcurrencyReached { running, limit } => {

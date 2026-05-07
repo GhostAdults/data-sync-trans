@@ -1,10 +1,11 @@
 use super::ast::Expr;
 use super::functions::*;
+use anyhow::Result;
 use serde_json::Value;
 use std::collections::HashMap;
 
 /// 函数签名：接受参数列表和求值闭包，返回结果
-pub type DslFunction = fn(&[Expr], &dyn Fn(&Expr) -> Value) -> Value;
+pub type DslFunction = fn(&[Expr], &dyn Fn(&Expr) -> Result<Value>) -> Result<Value>;
 
 /// 函数注册表
 pub struct FunctionRegistry {
@@ -36,10 +37,10 @@ impl FunctionRegistry {
         &self,
         name: &str,
         args: &[Expr],
-        eval_fn: &dyn Fn(&Expr) -> Value,
+        eval_fn: &dyn Fn(&Expr) -> Result<Value>,
     ) -> Result<Value, String> {
         match self.functions.get(name) {
-            Some(func) => Ok(func(args, eval_fn)),
+            Some(func) => func(args, eval_fn).map_err(|e| e.to_string()),
             None => Err(format!("未知函数: {}", name)),
         }
     }

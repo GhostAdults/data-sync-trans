@@ -85,42 +85,44 @@ impl RecordBuilder {
     pub fn new(
         column_mapping: BTreeMap<String, String>,
         column_types: Option<BTreeMap<String, String>>,
-    ) -> Self {
-        let transform_engine = Self::build_engine_if_needed(&column_mapping);
+    ) -> Result<Self> {
+        let transform_engine = Self::build_engine_if_needed(&column_mapping)?;
 
-        Self {
+        Ok(Self {
             column_mapping,
             column_types,
             registry: Arc::new(TypeConverterRegistry::new()),
             source_type: SourceType::Other("unknown".to_string()),
             table_name: None,
             transform_engine,
-        }
+        })
     }
 
     pub fn with_registry(
         column_mapping: BTreeMap<String, String>,
         column_types: Option<BTreeMap<String, String>>,
         registry: Arc<TypeConverterRegistry>,
-    ) -> Self {
-        let transform_engine = Self::build_engine_if_needed(&column_mapping);
+    ) -> Result<Self> {
+        let transform_engine = Self::build_engine_if_needed(&column_mapping)?;
 
-        Self {
+        Ok(Self {
             column_mapping,
             column_types,
             registry,
             source_type: SourceType::Other("unknown".to_string()),
             table_name: None,
             transform_engine,
-        }
+        })
     }
 
-    fn build_engine_if_needed(column_mapping: &BTreeMap<String, String>) -> Option<SyncEngine> {
+    fn build_engine_if_needed(
+        column_mapping: &BTreeMap<String, String>,
+    ) -> Result<Option<SyncEngine>> {
         let has_dsl = column_mapping
             .values()
             .any(|v| matches!(classify_mapping(v), MappingStrategy::Dsl));
         if !has_dsl {
-            return None;
+            return Ok(None);
         }
 
         let rules: Vec<(String, String)> = column_mapping
@@ -131,7 +133,7 @@ impl RecordBuilder {
             })
             .collect();
 
-        Some(SyncEngine::new(rules))
+        Ok(Some(SyncEngine::new(rules)?))
     }
 
     pub fn with_source_type(mut self, source_type: SourceType) -> Self {
@@ -194,7 +196,7 @@ impl RecordBuilder {
         item: &JsonValue,
         row: &mut MappingRow,
     ) -> Result<()> {
-        let transformed = engine.process_row(item);
+        let transformed = engine.process_row(item)?;
 
         for target_col in self.column_mapping.keys() {
             let source_val = transformed
@@ -271,6 +273,7 @@ mod tests {
         types.insert("age".to_string(), "int".to_string());
 
         let builder = RecordBuilder::new(mapping, Some(types))
+            .unwrap_or_else(|e| panic!("record builder should be valid: {}", e))
             .with_source_type(SourceType::MySQL)
             .with_table_name("users");
 
@@ -291,7 +294,8 @@ mod tests {
         let mut mapping = BTreeMap::new();
         mapping.insert("id".to_string(), "id".to_string());
 
-        let builder = RecordBuilder::new(mapping, None);
+        let builder = RecordBuilder::new(mapping, None)
+            .unwrap_or_else(|e| panic!("record builder should be valid: {}", e));
         let items = vec![json!({"id": 1}), json!({"id": 2})];
 
         let records = builder.build_batch(&items).unwrap();
@@ -317,7 +321,8 @@ mod tests {
         let mut mapping = BTreeMap::new();
         mapping.insert("id".to_string(), "id".to_string());
 
-        let builder = RecordBuilder::new(mapping, None);
+        let builder = RecordBuilder::new(mapping, None)
+            .unwrap_or_else(|e| panic!("record builder should be valid: {}", e));
         let items = vec![json!({"id": 1}), json!({"id": 2})];
 
         let message = builder.build_message(&items).unwrap();
@@ -335,7 +340,8 @@ mod tests {
         mapping.insert("name".to_string(), "= upper(source.name)".to_string());
         mapping.insert("age".to_string(), "age".to_string());
 
-        let builder = RecordBuilder::new(mapping, None);
+        let builder = RecordBuilder::new(mapping, None)
+            .unwrap_or_else(|e| panic!("record builder should be valid: {}", e));
         let item = json!({"name": "alice", "age": 25});
 
         let record = builder.build(&item).unwrap();
@@ -356,7 +362,8 @@ mod tests {
         let mut types = BTreeMap::new();
         types.insert("is_adult".to_string(), "int".to_string());
 
-        let builder = RecordBuilder::new(mapping, Some(types));
+        let builder = RecordBuilder::new(mapping, Some(types))
+            .unwrap_or_else(|e| panic!("record builder should be valid: {}", e));
 
         let adult = builder.build(&json!({"age": 25})).unwrap();
         match adult.get_value("is_adult").unwrap() {
@@ -377,7 +384,8 @@ mod tests {
         mapping.insert("tag".to_string(), "expr: 'IMPORTED'".to_string());
         mapping.insert("id".to_string(), "id".to_string());
 
-        let builder = RecordBuilder::new(mapping, None);
+        let builder = RecordBuilder::new(mapping, None)
+            .unwrap_or_else(|e| panic!("record builder should be valid: {}", e));
         let record = builder.build(&json!({"id": 42})).unwrap();
 
         match record.get_value("tag").unwrap() {
@@ -391,7 +399,8 @@ mod tests {
         let mut mapping = BTreeMap::new();
         mapping.insert("name".to_string(), "name".to_string());
 
-        let builder = RecordBuilder::new(mapping, None);
+        let builder = RecordBuilder::new(mapping, None)
+            .unwrap_or_else(|e| panic!("record builder should be valid: {}", e));
         assert!(builder.transform_engine.is_none());
 
         let record = builder.build(&json!({"name": "test"})).unwrap();
@@ -399,5 +408,20 @@ mod tests {
             relus_common::types::UnifiedValue::String(s) => assert_eq!(s, "test"),
             other => panic!("expected String, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn invalid_dsl_mapping_returns_error() {
+        let mut mapping = BTreeMap::new();
+        mapping.insert(
+            "userAccount".to_string(),
+            "expr: if(source.userAccount == user_2500, 1, 0)".to_string(),
+        );
+
+        let err = RecordBuilder::new(mapping, None)
+            .err()
+            .unwrap_or_else(|| panic!("invalid DSL should return an error"));
+
+        assert!(err.to_string().contains("DSL rule compile failed"));
     }
 }

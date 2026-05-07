@@ -14,7 +14,9 @@
           "username": "root",
           "password": "123456",
           "table": "user_x",
-          "key_columns": ["id"],
+          "key_columns": [
+            "id"
+          ],
           "max_connections": 20,
           "acquire_timeout_secs": 30,
           "use_transaction": true
@@ -35,7 +37,9 @@
         "username": "root",
         "password": "123456",
         "table": "user_w",
-        "key_columns": ["id"],
+        "key_columns": [
+          "id"
+        ],
         "max_connections": 20,
         "acquire_timeout_secs": 30,
         "use_transaction": true
@@ -44,7 +48,7 @@
   },
   "column_mapping": {
     "id": "id",
-    "userAccount": "userAccount",
+    "userAccount": "expr: if(source.userAccount == 'user_2500', 1, source.userAccount)",
     "userPassword": "userPassword"
   },
   "column_types": {
@@ -52,7 +56,7 @@
     "userAccount": "string",
     "userPassword": "string"
   },
-  "sync_mode": "full",
-  "batch_size": 12000,
-  "channel_buffer_size": 12000
+  "sync_mode": "fullsnapshot",
+  "batch_size": 20000,
+  "channel_buffer_size": 20000
 }
