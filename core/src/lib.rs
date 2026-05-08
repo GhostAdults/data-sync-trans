@@ -21,7 +21,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-fn caload_embedded_defaults() -> serde_json::Value {
+fn load_embedded_defaults() -> serde_json::Value {
     let defaults_content = include_str!("../../cli/user_config/default.config.json");
     match serde_json::from_str(defaults_content) {
         Ok(v) => v,
