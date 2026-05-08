@@ -26,7 +26,11 @@ pub fn init_file_logger() {
 
     let log_dir = exe_dir.join("logs");
     if let Err(err) = std::fs::create_dir_all(&log_dir) {
-        eprintln!("Failed to create logs directory {}: {}", log_dir.display(), err);
+        eprintln!(
+            "Failed to create logs directory {}: {}",
+            log_dir.display(),
+            err
+        );
         return;
     }
 
