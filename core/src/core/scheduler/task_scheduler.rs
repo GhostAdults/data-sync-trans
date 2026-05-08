@@ -66,7 +66,7 @@ impl TaskScheduler {
             self.control_handle(),
             self.repl_cancel.clone(),
         ));
-        let repl_alive = self.repl_alive.clone();
+        let repl_alive = Arc::clone(&self.repl_alive);
         repl_alive.store(true, Ordering::Relaxed);
         std::thread::spawn(move || {
             repl.run();

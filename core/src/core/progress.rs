@@ -2,6 +2,7 @@
 //!
 //! 基于 indicatif MultiProgress，Reader/Writer 通过 ProgressBar::inc 实时递增。
 
+use anyhow::Result;
 use indicatif::{MultiProgress, ProgressBar, ProgressDrawTarget, ProgressStyle};
 
 /// 进度条上下文
@@ -13,20 +14,21 @@ pub struct ProgressContext {
     pub total_records: usize,
 }
 
-fn bar_style() -> ProgressStyle {
-    ProgressStyle::with_template("[{elapsed_precise}] {bar:40.cyan/green} {pos:>7}/{len:7} {msg}")
-        .unwrap()
-        .progress_chars("█ ")
+fn bar_style() -> Result<ProgressStyle> {
+    Ok(ProgressStyle::with_template(
+        "[{elapsed_precise}] {bar:40.cyan/green} {pos:>7}/{len:7} {msg}",
+    )?
+    .progress_chars("█ "))
 }
 
-fn spinner_style() -> ProgressStyle {
-    ProgressStyle::with_template("{msg}").unwrap()
+fn spinner_style() -> Result<ProgressStyle> {
+    Ok(ProgressStyle::with_template("{msg}")?)
 }
 
-pub fn create_progress_bars(total_records: usize) -> ProgressContext {
+pub fn create_progress_bars(total_records: usize) -> Result<ProgressContext> {
     let multi = MultiProgress::new();
     multi.set_draw_target(ProgressDrawTarget::stderr()); //防止进度条被日志输出干扰，保持在终端底部显示
-    let sty = bar_style();
+    let sty = bar_style()?;
 
     let (reader_bar, spacer, writer_bar) = if total_records > 0 {
         let rb: ProgressBar = multi.add(ProgressBar::new(total_records as u64));
@@ -35,7 +37,7 @@ pub fn create_progress_bars(total_records: usize) -> ProgressContext {
         rb.set_message("reading");
 
         let spacer = multi.insert_after(&rb, ProgressBar::new(1));
-        spacer.set_style(spinner_style());
+        spacer.set_style(spinner_style()?);
         spacer.set_message("-------------------------------------------------------------");
 
         let wb = multi.insert_after(&spacer, ProgressBar::new(total_records as u64));
@@ -45,14 +47,14 @@ pub fn create_progress_bars(total_records: usize) -> ProgressContext {
 
         (rb, spacer, wb)
     } else {
-        let spinner_sty = ProgressStyle::with_template("{spinner} {prefix}: {pos} events").unwrap();
+        let spinner_sty = ProgressStyle::with_template("{spinner} {prefix}: {pos} events")?;
 
         let rb = multi.add(ProgressBar::new_spinner());
         rb.set_style(spinner_sty.clone());
         rb.set_prefix("Reader");
 
         let spacer = multi.insert_after(&rb, ProgressBar::new(0));
-        spacer.set_style(ProgressStyle::with_template(" ").unwrap());
+        spacer.set_style(ProgressStyle::with_template(" ")?);
 
         let wb = multi.insert_after(&spacer, ProgressBar::new_spinner());
         wb.set_style(spinner_sty);
@@ -61,17 +63,17 @@ pub fn create_progress_bars(total_records: usize) -> ProgressContext {
         (rb, spacer, wb)
     };
 
-    ProgressContext {
+    Ok(ProgressContext {
         multi,
         reader_bar,
         spacer,
         writer_bar,
         total_records,
-    }
+    })
 }
 
 impl ProgressContext {
-    pub fn finish(&self) {
+    pub fn finish(&self) -> Result<()> {
         if self.total_records > 0 {
             self.reader_bar.finish_with_message("Done.");
             self.writer_bar.finish_with_message("Done.");
@@ -84,6 +86,7 @@ impl ProgressContext {
         self.spacer
             .finish_with_message("-------------------------------------------------------------");
 
-        self.multi.println("All tasks completed!").unwrap();
+        self.multi.println("All tasks completed!")?;
+        Ok(())
     }
 }

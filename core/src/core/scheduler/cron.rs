@@ -50,12 +50,8 @@ impl CronTracker {
         let due: Vec<String> = self
             .entries
             .iter()
-            .filter_map(|(id, entry)| {
-                entry
-                    .next_fire
-                    .is_some_and(|f| f <= now)
-                    .then(|| id.clone())
-            })
+            .filter(|&(_id, entry)| entry.next_fire.is_some_and(|f| f <= now))
+            .map(|(id, _)| id.clone())
             .collect();
 
         for job_id in &due {

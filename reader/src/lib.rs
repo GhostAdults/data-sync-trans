@@ -103,11 +103,15 @@ impl ReaderRegistry {
     pub fn collect_and_register() {
         let registry = Self::instance();
         for plugin in inventory::iter::<ReaderPlugin> {
-            registry
-                .creators
-                .write()
-                .unwrap()
-                .insert(plugin.source_type.to_string(), plugin.create);
+            let Ok(mut creators) = registry.creators.write() else {
+                eprintln!(
+                    "Reader registry is unavailable; skipped registration for '{}'",
+                    plugin.source_type
+                );
+                continue;
+            };
+
+            creators.insert(plugin.source_type.to_string(), plugin.create);
         }
     }
 
@@ -116,7 +120,10 @@ impl ReaderRegistry {
         source_type: &str,
         config: Arc<JobConfig>,
     ) -> Result<Box<dyn DataReader>> {
-        let creators = self.creators.read().unwrap();
+        let creators = self
+            .creators
+            .read()
+            .map_err(|err| anyhow::anyhow!("Reader registry lock is poisoned: {}", err))?;
         let creator = creators.get(source_type).ok_or_else(|| {
             anyhow::anyhow!(
                 "未找到 Reader 类型: '{}'. 已注册: {:?}",
@@ -128,7 +135,12 @@ impl ReaderRegistry {
     }
 
     pub fn list_readers(&self) -> Vec<String> {
-        self.creators.read().unwrap().keys().cloned().collect()
+        let Ok(creators) = self.creators.read() else {
+            eprintln!("Reader registry is unavailable; cannot list readers");
+            return Vec::new();
+        };
+
+        creators.keys().cloned().collect()
     }
 }
 

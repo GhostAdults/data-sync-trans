@@ -229,17 +229,17 @@ pub struct BinlogReader {
 
 /// Binlog Job 业务逻辑
 pub struct BinlogJob {
-    original_config: Arc<JobConfig>,
+    _original_config: Arc<JobConfig>,
     binlog_config: BinlogConfig,
     column_names: Vec<String>,
     shutdown: Arc<AtomicBool>,
 }
 
 impl BinlogJob {
-    pub fn new(original_config: Arc<JobConfig>, binlog_config: BinlogConfig) -> Self {
-        let column_names: Vec<String> = original_config.column_mapping.keys().cloned().collect();
+    pub fn new(_original_config: Arc<JobConfig>, binlog_config: BinlogConfig) -> Self {
+        let column_names: Vec<String> = _original_config.column_mapping.keys().cloned().collect();
         Self {
-            original_config,
+            _original_config,
             binlog_config,
             column_names,
             shutdown: Arc::new(AtomicBool::new(false)),
@@ -538,7 +538,7 @@ mod tests {
     }
 
     #[test]
-    fn test_binlog_config_parse() {
+    fn test_binlog_config_parse() -> Result<()> {
         let config = serde_json::json!({
             "connection": {
                 "url": "mysql://root:pass@192.168.1.100:3307/mydb",
@@ -560,7 +560,7 @@ mod tests {
             config,
         };
 
-        let binlog_cfg = BinlogConfig::from_data_source_config(&ds).unwrap();
+        let binlog_cfg = BinlogConfig::from_data_source_config(&ds)?;
 
         assert_eq!(binlog_cfg.hostname, "192.168.1.100");
         assert_eq!(binlog_cfg.port, 3307);
@@ -568,6 +568,7 @@ mod tests {
         assert_eq!(binlog_cfg.server_id, 2001);
         assert_eq!(binlog_cfg.binlog_file, Some("mysql-bin.000003".to_string()));
         assert_eq!(binlog_cfg.binlog_position, Some(194));
+        Ok(())
     }
 
     #[test]

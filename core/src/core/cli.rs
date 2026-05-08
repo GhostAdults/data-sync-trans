@@ -238,7 +238,7 @@ pub async fn run_cli(cmd: Commands) -> Result<()> {
 }
 
 fn sanitize_identifier(s: &str) -> Result<()> {
-    let re = Regex::new(r"^[A-Za-z0-9_]+$").unwrap();
+    let re = Regex::new(r"^[A-Za-z0-9_]+$")?;
     if !re.is_match(s) {
         bail!("标识符仅允许字母、数字和下划线: {}", s);
     }
@@ -366,7 +366,7 @@ fn try_powershell(cfg: &ApiConfig) -> Result<Vec<u8>> {
         timeout
     ));
     let output = Command::new("powershell")
-        .args(&["-NoProfile", "-Command", &ps])
+        .args(["-NoProfile", "-Command", &ps])
         .output();
     match output {
         Ok(out) => {

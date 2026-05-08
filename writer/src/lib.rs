@@ -100,7 +100,10 @@ impl WriterRegistry {
         source_type: &str,
         config: Arc<JobConfig>,
     ) -> Result<Box<dyn DataWriter>> {
-        let creators = self.creators.read().unwrap();
+        let creators = self
+            .creators
+            .read()
+            .map_err(|err| anyhow::anyhow!("Writer registry lock is poisoned: {}", err))?;
         let creator = creators.get(source_type).ok_or_else(|| {
             anyhow::anyhow!(
                 "未找到 Writer 类型: '{}'. 已注册: {:?}",

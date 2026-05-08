@@ -11,6 +11,7 @@
 use anyhow::Result;
 use futures::stream::FuturesUnordered;
 use futures::StreamExt;
+use indicatif::ProgressBar;
 use relus_common::constant::pipeline::{
     DEFAULT_BATCH_SIZE, DEFAULT_BUFFER_SIZE, DEFAULT_CHANNEL_NUMBER, DEFAULT_PER_GROUP_CHANNEL,
     DEFAULT_READER_THREADS,
@@ -33,6 +34,35 @@ use crate::pipeline::RecordBuilder;
 // ==========================================
 // 配置
 // ==========================================
+
+#[derive(Clone)]
+struct PipelineRunContext {
+    reader: Arc<dyn DataReader>,
+    writer: Arc<dyn DataWriter>,
+    buffer_size: usize,
+    batch_size: usize,
+    record_builder: Arc<RecordBuilder>,
+    cancel_token: CancellationToken,
+    progress: PipelineProgress,
+}
+
+#[derive(Clone)]
+struct PipelineProgress {
+    reader_bar: ProgressBar,
+    writer_bar: ProgressBar,
+}
+
+struct PairWork {
+    pair_id: usize,
+    read_task: ReadTask,
+    write_task: WriteTask,
+}
+
+struct GroupWork {
+    group_id: usize,
+    tasks: Vec<PairWork>,
+    concurrency: usize,
+}
 
 struct PairResult {
     pair_id: usize,
@@ -181,7 +211,7 @@ async fn csas(
     batch_size: usize,
     builder: &RecordBuilder,
     tx: &mpsc::Sender<PipelineMessage>,
-    reader_bar: &indicatif::ProgressBar,
+    reader_bar: &ProgressBar,
 ) -> Result<usize> {
     let stream = reader.read_data(task).await?;
     let mut sent = 0;
@@ -219,26 +249,22 @@ async fn csas(
     Ok(sent)
 }
 
-async fn run_task_pair(
-    pair_id: usize,
-    reader: Arc<dyn DataReader>,
-    writer: Arc<dyn DataWriter>,
-    read_task: ReadTask,
-    write_task: WriteTask,
-    buffer_size: usize,
-    batch_size: usize,
-    record_builder: Arc<RecordBuilder>,
-    cancel_token: CancellationToken,
-    reader_bar: indicatif::ProgressBar,
-    writer_bar: indicatif::ProgressBar,
-) -> PairResult {
-    let (tx, rx) = mpsc::channel(buffer_size);
-    let was_cancelled = cancel_token.is_cancelled();
+async fn run_task_pair(pair: PairWork, ctx: PipelineRunContext) -> PairResult {
+    let PairWork {
+        pair_id,
+        read_task,
+        write_task,
+    } = pair;
 
-    let r = Arc::clone(&reader);
-    let builder = Arc::clone(&record_builder);
-    let reader_cancel = cancel_token.clone();
-    let r_bar = reader_bar.clone();
+    let (tx, rx) = mpsc::channel(ctx.buffer_size);
+    let was_cancelled = ctx.cancel_token.is_cancelled();
+
+    let r = Arc::clone(&ctx.reader);
+    let reader_for_cancel = Arc::clone(&ctx.reader);
+    let builder = Arc::clone(&ctx.record_builder);
+    let reader_cancel = ctx.cancel_token.clone();
+    let r_bar = ctx.progress.reader_bar.clone();
+    let batch_size = ctx.batch_size;
     let r_handle = tokio::spawn(async move {
         tokio::select! {
             result = csas(pair_id, r, &read_task, batch_size, &builder, &tx, &r_bar) => {
@@ -256,15 +282,15 @@ async fn run_task_pair(
             }
             () = reader_cancel.cancelled() => {
                 warn!("Reader-{} being eliminated.【outside】", pair_id);
-                reader.shutdown();
+                reader_for_cancel.shutdown();
                 Err(anyhow::anyhow!("Reader-{} process terminates unexpectedly.", pair_id))
             }
         }
     });
 
     // 中间转发 task: rx → writer_bar.inc → tx2，Writer 拿 rx2
-    let (tx2, rx2) = mpsc::channel(buffer_size);
-    let w_bar = writer_bar.clone();
+    let (tx2, rx2) = mpsc::channel(ctx.buffer_size);
+    let w_bar = ctx.progress.writer_bar.clone();
     let relay_handle = tokio::spawn(async move {
         let mut rx = rx;
         while let Some(msg) = rx.recv().await {
@@ -277,8 +303,8 @@ async fn run_task_pair(
         }
     });
 
-    let w = Arc::clone(&writer);
-    let writer_cancel = cancel_token.clone();
+    let w = Arc::clone(&ctx.writer);
+    let writer_cancel = ctx.cancel_token.clone();
     let w_handle = tokio::spawn(async move {
         tokio::select! {
             result = w.write_data(write_task, rx2) => {
@@ -328,20 +354,13 @@ async fn run_task_pair(
     }
 }
 
-async fn run_task_group(
-    group_id: usize,
-    tasks: Vec<(usize, ReadTask, WriteTask)>,
-    concurrency: usize,
-    reader: Arc<dyn DataReader>,
-    writer: Arc<dyn DataWriter>,
-    buffer_size: usize,
-    batch_size: usize,
-    record_builder: Arc<RecordBuilder>,
-    cancel_token: CancellationToken,
-    reader_bar: indicatif::ProgressBar,
-    writer_bar: indicatif::ProgressBar,
-) -> GroupResult {
-    let mut queue: VecDeque<(usize, ReadTask, WriteTask)> = VecDeque::from(tasks);
+async fn run_task_group(group: GroupWork, ctx: PipelineRunContext) -> GroupResult {
+    let GroupWork {
+        group_id,
+        tasks,
+        concurrency,
+    } = group;
+    let mut queue: VecDeque<PairWork> = VecDeque::from(tasks);
     let mut running = FuturesUnordered::new();
 
     let mut total_read = 0usize;
@@ -350,20 +369,8 @@ async fn run_task_group(
     let mut group_shutdown = false;
 
     while running.len() < concurrency {
-        if let Some((pair_id, read_task, write_task)) = queue.pop_front() {
-            running.push(run_task_pair(
-                pair_id,
-                Arc::clone(&reader),
-                Arc::clone(&writer),
-                read_task,
-                write_task,
-                buffer_size,
-                batch_size,
-                Arc::clone(&record_builder),
-                cancel_token.clone(),
-                reader_bar.clone(),
-                writer_bar.clone(),
-            ));
+        if let Some(pair) = queue.pop_front() {
+            running.push(run_task_pair(pair, ctx.clone()));
         } else {
             break;
         }
@@ -382,7 +389,7 @@ async fn run_task_group(
             if first_error.is_none() && !pair_result.shutdown {
                 first_error = Some(e);
             }
-            cancel_token.cancel();
+            ctx.cancel_token.cancel();
         } else {
             total_read += pair_result.read_count;
             total_written += pair_result.write_count;
@@ -394,20 +401,8 @@ async fn run_task_group(
 
         if first_error.is_none() {
             while running.len() < concurrency {
-                if let Some((pair_id, read_task, write_task)) = queue.pop_front() {
-                    running.push(run_task_pair(
-                        pair_id,
-                        Arc::clone(&reader),
-                        Arc::clone(&writer),
-                        read_task,
-                        write_task,
-                        buffer_size,
-                        batch_size,
-                        Arc::clone(&record_builder),
-                        cancel_token.clone(),
-                        reader_bar.clone(),
-                        writer_bar.clone(),
-                    ));
+                if let Some(pair) = queue.pop_front() {
+                    running.push(run_task_pair(pair, ctx.clone()));
                 } else {
                     break;
                 }
@@ -447,10 +442,7 @@ async fn run_paired_pipeline(
         return Ok(PipelineStats::default());
     }
 
-    let progress_ctx = create_progress_bars(reader_split.total_records);
-    let reader_bar = progress_ctx.reader_bar.clone();
-    let writer_bar = progress_ctx.writer_bar.clone();
-
+    let progress_ctx = create_progress_bars(reader_split.total_records)?;
     let writer_split = writer.split(task_count).await?;
     info!(
         "[{}] 切分为 {} 个任务（R1:W1）",
@@ -470,14 +462,14 @@ async fn run_paired_pipeline(
     let per_group_channel = config.per_group_channel.max(1);
     let group_count = need_channel.div_ceil(per_group_channel);
 
-    let mut grouped_tasks: Vec<Vec<(usize, ReadTask, WriteTask)>> = vec![Vec::new(); group_count];
+    let mut grouped_tasks: Vec<Vec<PairWork>> = (0..group_count).map(|_| Vec::new()).collect();
     for i in 0..task_count {
         let group_id = i % group_count;
-        grouped_tasks[group_id].push((
-            i,
-            reader_split.tasks[i].clone(),
-            writer_split.tasks[i].clone(),
-        ));
+        grouped_tasks[group_id].push(PairWork {
+            pair_id: i,
+            read_task: reader_split.tasks[i].clone(),
+            write_task: writer_split.tasks[i].clone(),
+        });
     }
 
     let base_group_concurrency = need_channel / group_count;
@@ -489,6 +481,18 @@ async fn run_paired_pipeline(
     );
 
     let mut group_handles = FuturesUnordered::new();
+    let run_ctx = PipelineRunContext {
+        reader: Arc::clone(&reader),
+        writer: Arc::clone(&writer),
+        buffer_size: config.buffer_size,
+        batch_size: config.batch_size,
+        record_builder: Arc::clone(&record_builder),
+        cancel_token: cancel_token.clone(),
+        progress: PipelineProgress {
+            reader_bar: progress_ctx.reader_bar.clone(),
+            writer_bar: progress_ctx.writer_bar.clone(),
+        },
+    };
 
     for (group_id, tasks) in grouped_tasks.into_iter().enumerate() {
         if tasks.is_empty() {
@@ -506,17 +510,12 @@ async fn run_paired_pipeline(
         );
 
         let group_future = run_task_group(
-            group_id,
-            tasks,
-            group_concurrency,
-            Arc::clone(&reader),
-            Arc::clone(&writer),
-            config.buffer_size,
-            config.batch_size,
-            Arc::clone(&record_builder),
-            cancel_token.clone(),
-            reader_bar.clone(),
-            writer_bar.clone(),
+            GroupWork {
+                group_id,
+                tasks,
+                concurrency: group_concurrency,
+            },
+            run_ctx.clone(),
         );
 
         group_handles.push(tokio::spawn(group_future));
@@ -565,7 +564,7 @@ async fn run_paired_pipeline(
     stats.records_failed = stats.records_failed();
     stats.calculate_throughput();
 
-    progress_ctx.finish();
+    progress_ctx.finish()?;
 
     if let Some(e) = first_error {
         return Err(e);

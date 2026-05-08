@@ -17,6 +17,7 @@ use relus_common::app_config::schema::ConfigSchema;
 use relus_common::app_config::value::ConfigValue;
 use relus_common::app_config::watcher;
 use relus_common::job_config::JobConfig;
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -38,8 +39,14 @@ pub fn init_system_config() -> Option<Arc<RwLock<ConfigManager>>> {
             Ok(m) => m,
             Err(e) => {
                 eprintln!("Failed to create ConfigManager: {}", e);
-                // 暂时构建一个空的
-                return Arc::new(RwLock::new(ConfigManager::new(PathBuf::from("")).unwrap()));
+                // 构建一个空的
+                return Arc::new(RwLock::new(ConfigManager {
+                    schema: HashMap::new(),
+                    defaults: HashMap::new(),
+                    user: HashMap::new(),
+                    merged: HashMap::new(),
+                    path: PathBuf::new(),
+                }));
             }
         };
 
@@ -109,7 +116,7 @@ pub fn init_system_config() -> Option<Arc<RwLock<ConfigManager>>> {
         let _config_path = mgr_arc.read().path.clone();
     }
 
-    Some(mgr_arc.clone())
+    Some(Arc::clone(mgr_arc))
 }
 
 pub fn init_and_watch_config() {
@@ -130,7 +137,7 @@ pub fn init_and_watch_config() {
         let config_path = mgr.read().path.clone();
 
         // 启动 watcher 并持有句柄
-        match watcher::watch(config_path, mgr.clone()) {
+        match watcher::watch(config_path, Arc::clone(&mgr)) {
             Ok(w) => {
                 let _ = WATCHER_HOLDER.set(w);
             }

@@ -13,11 +13,11 @@ impl FormatTime for ChronoLocalTimer {
     }
 }
 
-/// 在 exe 所在目录下创建 `logs/YYYY-MM-DD.log`，并以本地时间格式初始化 tracing 日志。
+/// Creates `logs/YYYY-MM-DD.log` next to the executable and initializes tracing.
 ///
 /// # Panics
 ///
-/// 当无法创建日志文件时 panic。
+/// Panics if the log file cannot be created.
 pub fn init_file_logger() {
     let exe_dir = std::env::current_exe()
         .ok()
@@ -26,14 +26,14 @@ pub fn init_file_logger() {
 
     let log_dir = exe_dir.join("logs");
     if let Err(err) = std::fs::create_dir_all(&log_dir) {
-        eprintln!("无法创建 logs 目录 {}: {}", log_dir.display(), err);
+        eprintln!("Failed to create logs directory {}: {}", log_dir.display(), err);
         return;
     }
 
     let log_name = format!("{}.log", Local::now().format("%Y-%m-%d"));
     let log_path = log_dir.join(&log_name);
     let log_file = std::fs::File::create(&log_path)
-        .unwrap_or_else(|_| panic!("无法创建日志文件: {}", log_path.display()));
+        .unwrap_or_else(|_| panic!("Failed to create log file: {}", log_path.display()));
     let log_file = Mutex::new(log_file);
 
     tracing_subscriber::fmt()
@@ -42,14 +42,14 @@ pub fn init_file_logger() {
             let file = match log_file.lock() {
                 Ok(file) => file,
                 Err(err) => {
-                    eprintln!("日志文件锁已损坏: {}", err);
+                    eprintln!("Log file lock is poisoned: {}", err);
                     return Box::new(std::io::sink()) as Box<dyn Write + Send>;
                 }
             };
             match file.try_clone() {
                 Ok(file) => Box::new(std::io::BufWriter::new(file)) as Box<dyn Write + Send>,
                 Err(err) => {
-                    eprintln!("无法克隆日志文件句柄: {}", err);
+                    eprintln!("Failed to clone log file handle: {}", err);
                     Box::new(std::io::sink()) as Box<dyn Write + Send>
                 }
             }
@@ -58,7 +58,7 @@ pub fn init_file_logger() {
         .with_env_filter(match "info".parse() {
             Ok(directive) => EnvFilter::from_default_env().add_directive(directive),
             Err(err) => {
-                eprintln!("无法解析默认日志级别 info: {}", err);
+                eprintln!("Failed to parse default log level 'info': {}", err);
                 EnvFilter::from_default_env()
             }
         })

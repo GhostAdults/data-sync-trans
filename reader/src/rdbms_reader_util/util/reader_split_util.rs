@@ -158,7 +158,7 @@ fn build_single_task(
         .where_raw_opt(config.where_clause.as_deref())
         .build();
 
-    let conn = conns.first().cloned().unwrap_or_else(|| JsonValue::Null);
+    let conn = conns.first().cloned().unwrap_or(JsonValue::Null);
     vec![ReadTask {
         task_id: 0,
         conn,
@@ -250,7 +250,7 @@ async fn split_by_pk(
         config.where_clause.as_deref(),
         split_pk,
     );
-    let conn = conns.first().cloned().unwrap_or_else(|| JsonValue::Null);
+    let conn = conns.first().cloned().unwrap_or(JsonValue::Null);
     tasks.push(ReadTask {
         task_id: tasks.len(),
         conn,
@@ -273,8 +273,8 @@ fn split_by_limit_offset(
         return vec![];
     }
 
-    let shard_size = (total_records + shard_count - 1) / shard_count;
-    let actual_count = (total_records + shard_size - 1) / shard_size;
+    let shard_size = total_records.div_ceil(shard_count);
+    let actual_count = total_records.div_ceil(shard_size);
 
     let mut tasks = Vec::with_capacity(actual_count);
     for i in 0..actual_count {

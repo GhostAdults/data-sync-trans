@@ -30,7 +30,7 @@ fn test_type_conversion() {
         (json!(42), Some("int"), "整数转换"),
         (json!("123"), Some("int"), "字符串转整数"),
         (json!(null), Some("int"), "null 转整数"),
-        (json!(3.14159), Some("float"), "浮点数转换"),
+        (json!(2.5), Some("float"), "浮点数转换"),
         (json!("2.718"), Some("float"), "字符串转浮点数"),
         (json!(true), Some("bool"), "布尔值转换"),
         (json!("yes"), Some("bool"), "字符串 'yes' 转布尔"),

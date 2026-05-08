@@ -71,7 +71,7 @@ pub fn try_powershell(cfg: &ApiConfig) -> Result<Vec<u8>> {
         timeout
     ));
     let output = Command::new("powershell")
-        .args(&["-NoProfile", "-Command", &ps])
+        .args(["-NoProfile", "-Command", &ps])
         .output();
     match output {
         Ok(out) => {

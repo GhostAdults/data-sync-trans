@@ -19,15 +19,13 @@ fn biguint_to_uuid(n: &BigUint) -> String {
 fn string_to_bigint(s: &str, radix: u32) -> BigInt {
     let base = BigInt::from(radix);
     let mut result = BigInt::zero();
-    let mut k: u32 = 0;
-    for b in s.bytes().rev() {
+    for (k, b) in (0_u32..).zip(s.bytes().rev()) {
         assert!(
             b < 128,
             "仅支持 ASCII 字符串,radix到非 ASCII 字符: 0x{:02X}",
             b
         );
         result += BigInt::from(b) * base.pow(k);
-        k += 1;
     }
     result
 }
