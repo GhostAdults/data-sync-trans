@@ -1,12 +1,14 @@
+//! Built-in DSL function implementations.
+//!
+//! All functions use the same callable shape so they can be registered in the
+//! DSL function registry.
+//!
+//! Function arguments are received as unevaluated expressions. The `eval_fn`
+//! callback evaluates an expression only when the function needs its value,
+//! which allows functions such as `if` to use lazy branch evaluation.
+
 use anyhow::Result;
 use serde_json::Value;
-
-/// DSL 函数实现模块
-/// 所有函数都使用统一的签名，便于注册到 Registry
-
-/// 函数签名：接受参数列表和求值闭包，返回结果
-/// args: 未求值的表达式参数
-/// eval_fn: 求值闭包，用于按需求值参数
 
 pub fn op_upper(
     args: &[super::ast::Expr],
@@ -47,8 +49,9 @@ pub fn op_coalesce(
     Ok(Value::Null)
 }
 
-/// If 函数：if(condition, true_value, false_value)
-/// 惰性求值：只求值被选中的分支
+/// Evaluates `if(condition, true_value, false_value)`.
+///
+/// This function evaluates lazily: only the selected branch is evaluated.
 pub fn op_if(
     args: &[super::ast::Expr],
     eval_fn: &dyn Fn(&super::ast::Expr) -> Result<Value>,
@@ -57,18 +60,18 @@ pub fn op_if(
         return Ok(Value::Null);
     }
 
-    // 先求值条件表达式
+    // Evaluate the condition first.
     let condition = eval_fn(&args[0])?;
 
-    // 根据条件决定求值哪个分支（惰性求值）
+    // Evaluate only the selected branch.
     if condition.as_bool().unwrap_or(false) {
-        eval_fn(&args[1]) // true 分支
+        eval_fn(&args[1])
     } else {
-        eval_fn(&args[2]) // false 分支
+        eval_fn(&args[2])
     }
 }
 
-// 新增函数示例：
+// Example for adding a new function:
 // pub fn op_md5(args: &[super::ast::Expr], eval_fn: &dyn Fn(&super::ast::Expr) -> Value) -> Value {
 //     if args.is_empty() {
 //         return Value::Null;

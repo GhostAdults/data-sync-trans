@@ -9,9 +9,9 @@ use crate::{DataReaderJob, DataReaderTask, JsonStream, ReadTask, SplitReaderResu
 use anyhow::Result;
 use futures::{stream, StreamExt};
 use relus_common::JobConfig;
-use relus_connector_rdbms::pool::{DatabaseKind, RdbmsPool};
+use relus_connector_rdbms::pool::RdbmsPool;
 use relus_connector_rdbms::schema::{MetadataDiscoverer, RdbmsDiscoverer, TableSchema};
-use relus_connector_rdbms::sql_builder::SqlBuilder;
+use relus_connector_rdbms::sql_builder::RdbmsSqlBuilder;
 use relus_connector_rdbms::util::get_pool_from_config;
 use serde_json::Value as JsonValue;
 use sqlx::{Column, Row};
@@ -110,7 +110,7 @@ impl DataReaderTask for RdbmsReader {
         let sql = match &slice_task.query_sql {
             Some(query) => query.clone(),
             None => {
-                let builder = SqlBuilder::new(database_kind_from_pool(&pool));
+                let builder = RdbmsSqlBuilder::from_pool(&pool);
                 let query_str = self
                     .job
                     .config
@@ -241,7 +241,7 @@ pub async fn count_total_records(
     table: &str,
     query: Option<&str>,
 ) -> Result<usize> {
-    let sql = SqlBuilder::new(database_kind_from_pool(pool)).count(table, query);
+    let sql = RdbmsSqlBuilder::from_pool(pool).count(table, query);
     let result = pool.executor().fetch_column_pair(&sql).await?;
     match result.0 {
         Some(cv) => cv
@@ -249,12 +249,5 @@ pub async fn count_total_records(
             .and_then(|s| s.parse::<usize>().ok())
             .ok_or_else(|| anyhow::anyhow!("解析记录数失败")),
         None => Ok(0),
-    }
-}
-
-fn database_kind_from_pool(pool: &RdbmsPool) -> DatabaseKind {
-    match pool {
-        RdbmsPool::Postgres(_) => DatabaseKind::Postgres,
-        RdbmsPool::Mysql(_) => DatabaseKind::Mysql,
     }
 }

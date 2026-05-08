@@ -40,6 +40,7 @@ pub struct DbConfig {
     pub max_connections: Option<u32>,
     pub acquire_timeout_secs: Option<u64>,
     pub use_transaction: Option<bool>,
+    pub timezone: Option<String>,
 }
 
 fn default_port() -> u16 {
@@ -60,6 +61,7 @@ impl Default for DbConfig {
             max_connections: Some(10),
             acquire_timeout_secs: Some(30),
             use_transaction: Some(false),
+            timezone: None,
         }
     }
 }
@@ -178,6 +180,11 @@ impl DataSourceConfig {
             .map(|i| i as u32);
         let acquire_timeout_secs = conn.get("acquire_timeout_secs").and_then(|v| v.as_u64());
         let use_transaction = conn.get("use_transaction").and_then(|v| v.as_bool());
+        let timezone = conn
+            .get("timezone")
+            .or_else(|| conn.get("time_zone"))
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
 
         Ok(DbConfig {
             db_type,
@@ -191,6 +198,7 @@ impl DataSourceConfig {
             max_connections,
             acquire_timeout_secs,
             use_transaction,
+            timezone,
         })
     }
 

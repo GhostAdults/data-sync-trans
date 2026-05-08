@@ -39,7 +39,13 @@ pub fn init_file_logger() {
     tracing_subscriber::fmt()
         .with_timer(ChronoLocalTimer)
         .with_writer(move || {
-            let file = log_file.lock().unwrap();
+            let file = match log_file.lock() {
+                Ok(file) => file,
+                Err(err) => {
+                    eprintln!("日志文件锁已损坏: {}", err);
+                    return Box::new(std::io::sink()) as Box<dyn Write + Send>;
+                }
+            };
             match file.try_clone() {
                 Ok(file) => Box::new(std::io::BufWriter::new(file)) as Box<dyn Write + Send>,
                 Err(err) => {
@@ -49,6 +55,12 @@ pub fn init_file_logger() {
             }
         })
         .with_ansi(false)
-        .with_env_filter(EnvFilter::from_default_env().add_directive("info".parse().unwrap()))
+        .with_env_filter(match "info".parse() {
+            Ok(directive) => EnvFilter::from_default_env().add_directive(directive),
+            Err(err) => {
+                eprintln!("无法解析默认日志级别 info: {}", err);
+                EnvFilter::from_default_env()
+            }
+        })
         .init();
 }

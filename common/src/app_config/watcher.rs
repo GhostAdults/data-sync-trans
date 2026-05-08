@@ -19,19 +19,19 @@ pub fn watch(path: PathBuf, config: Arc<SharedConfig>) -> notify::Result<Recomme
                     .iter()
                     .any(|p| p.file_name() == config_file_path.file_name());
 
-                if is_relevant {
-                    if event.kind.is_modify() || event.kind.is_create() || event.kind.is_remove() {
-                        info!("[Watcher] config file changed, reloading...");
-                        let mut cfg = config.write();
-                        match load_user_config(&config_file_path) {
-                            Ok(user_cfg) => {
-                                cfg.user = user_cfg;
-                                cfg.build();
-                                debug!("[Watcher] reloaded, keys: {:?}", cfg.user.keys());
-                            }
-                            Err(e) => {
-                                error!("[Watcher] reload failed: {}", e);
-                            }
+                if is_relevant
+                    && (event.kind.is_modify() || event.kind.is_create() || event.kind.is_remove())
+                {
+                    info!("[Watcher] config file changed, reloading...");
+                    let mut cfg = config.write();
+                    match load_user_config(&config_file_path) {
+                        Ok(user_cfg) => {
+                            cfg.user = user_cfg;
+                            cfg.build();
+                            debug!("[Watcher] reloaded, keys: {:?}", cfg.user.keys());
+                        }
+                        Err(e) => {
+                            error!("[Watcher] reload failed: {}", e);
                         }
                     }
                 }

@@ -6,7 +6,7 @@ use anyhow::{bail, Context, Result};
 use std::sync::Arc;
 
 use super::pool::{detect_database_kind, get_db_pool, DatabaseKind, RdbmsPool};
-use super::sql_builder::SqlBuilder;
+use super::sql_builder::{MysqlBackend, PostgresBackend, RdbmsSqlBuilder, SqlBuilder};
 use relus_common::data_source_config::DataSourceConfig;
 use relus_common::job_config::JobConfig;
 use relus_common::resp::BaseDbQuery;
@@ -65,7 +65,14 @@ pub async fn get_pool_for(ds: &DataSourceConfig) -> Result<Arc<RdbmsPool>> {
     let max_conns = db_config.max_connections.unwrap_or(20);
     let acq_timeout = db_config.acquire_timeout_secs.unwrap_or(60);
     Ok(Arc::new(
-        get_db_pool(&db_config.to_url(), kind, max_conns, Some(acq_timeout)).await?,
+        get_db_pool(
+            &db_config.to_url(),
+            kind,
+            max_conns,
+            Some(acq_timeout),
+            db_config.timezone.clone(),
+        )
+        .await?,
     ))
 }
 
@@ -88,7 +95,7 @@ pub fn build_query_sql(
     offset: usize,
 ) -> String {
     let query_str = query.filter(|s| !s.trim().is_empty());
-    let builder = SqlBuilder::new(DatabaseKind::Mysql);
+    let builder = SqlBuilder::<MysqlBackend>::new();
     if let Some(custom_query) = query_str {
         builder
             .custom_query(custom_query)
@@ -105,18 +112,18 @@ pub fn build_query_sql(
 }
 
 pub fn build_select_query(columns: &str, table: &str) -> String {
-    SqlBuilder::new(DatabaseKind::Mysql)
+    SqlBuilder::<MysqlBackend>::new()
         .select(columns, table)
         .build()
 }
 
 /// PostgreSQL 列名加双引号，防止保留字冲突
 pub fn quote_pg_columns(columns: &str) -> String {
-    SqlBuilder::new(DatabaseKind::Postgres).column_list(columns)
+    SqlBuilder::<PostgresBackend>::new().column_list(columns)
 }
 
 pub fn build_select_query_for(columns: &str, table: &str, database_kind: DatabaseKind) -> String {
-    SqlBuilder::new(database_kind)
+    RdbmsSqlBuilder::new(database_kind)
         .select(columns, table)
         .build()
 }

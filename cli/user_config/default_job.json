@@ -13,7 +13,7 @@
           "database": "my_db",
           "username": "root",
           "password": "123456",
-          "table": "user_x",
+          "table": "base_bgpersion",
           "key_columns": [
             "id"
           ],
@@ -36,7 +36,8 @@
         "database": "my_db",
         "username": "root",
         "password": "123456",
-        "table": "user_w",
+        "timezone": "+08:00",
+        "table": "base_bgpersion_copy",
         "key_columns": [
           "id"
         ],
@@ -48,15 +49,17 @@
   },
   "column_mapping": {
     "id": "id",
-    "userAccount": "expr: 'IMPORTED'",
-    "userPassword": "userPassword"
+    "bank_name": "bank_name",
+    "sub_branch": "sub_branch",
+    "bank_ids": "bank_ids"
   },
   "column_types": {
-    "id": "int",
-    "userAccount": "string",
-    "userPassword": "string"
+    "id": "string",
+    "bank_name": "string",
+    "sub_branch": "string",
+    "bank_ids": "string"
   },
-  "sync_mode": "full",
+  "sync_mode": "fullsnapshot",
   "batch_size": 12000,
   "channel_buffer_size": 12000
 }

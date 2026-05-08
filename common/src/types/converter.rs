@@ -250,50 +250,55 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn test_int_converter() {
+    fn test_int_converter() -> Result<()> {
         let converter = IntConverter;
-        let result = converter.convert(&json!(42)).unwrap();
+        let result = converter.convert(&json!(42))?;
         assert_eq!(result.as_int(), Some(42));
 
-        let result = converter.convert(&json!(null)).unwrap();
+        let result = converter.convert(&json!(null))?;
         assert!(result.is_null());
+        Ok(())
     }
 
     #[test]
-    fn test_float_converter() {
+    fn test_float_converter() -> Result<()> {
         let converter = FloatConverter;
-        let result = converter.convert(&json!(3.14)).unwrap();
-        assert_eq!(result.as_float(), Some(3.14));
+        let result = converter.convert(&json!(2.5))?;
+        assert_eq!(result.as_float(), Some(2.5));
+        Ok(())
     }
 
     #[test]
-    fn test_bool_converter() {
+    fn test_bool_converter() -> Result<()> {
         let converter = BoolConverter;
-        let result = converter.convert(&json!(true)).unwrap();
+        let result = converter.convert(&json!(true))?;
         assert_eq!(result.as_bool(), Some(true));
 
-        let result = converter.convert(&json!("yes")).unwrap();
+        let result = converter.convert(&json!("yes"))?;
         assert_eq!(result.as_bool(), Some(true));
+        Ok(())
     }
 
     #[test]
-    fn test_text_converter() {
+    fn test_text_converter() -> Result<()> {
         let converter = TextConverter;
-        let result = converter.convert(&json!("hello")).unwrap();
+        let result = converter.convert(&json!("hello"))?;
         assert_eq!(result.as_str(), Some("hello"));
 
-        let result = converter.convert(&json!(42)).unwrap();
+        let result = converter.convert(&json!(42))?;
         assert_eq!(result.as_str(), Some("42"));
+        Ok(())
     }
 
     #[test]
-    fn test_registry() {
+    fn test_registry() -> Result<()> {
         let registry = TypeConverterRegistry::new();
 
-        let result = registry.convert(&json!(42), Some("int")).unwrap();
+        let result = registry.convert(&json!(42), Some("int"))?;
         assert_eq!(result.as_int(), Some(42));
 
-        let result = registry.convert(&json!("hello"), None).unwrap();
+        let result = registry.convert(&json!("hello"), None)?;
         assert_eq!(result.as_str(), Some("hello"));
+        Ok(())
     }
 }

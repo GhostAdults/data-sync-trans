@@ -284,7 +284,7 @@ RecordBuilder (统一构建入口)
 
 #### Types 模块 (`data_trans_common/src/types/`)
 
-- `typed_val.rs` - TypedVal 枚举（统一中间类型）和 TypeKind（类型标识）
+- `unified_value.rs` - UnifiedValue 枚举（统一中间类型）和 TypeKind（类型标识）
 - `converter.rs` - TypeConverter trait 和 TypeConverterRegistry
 - `converters/` - 7 个具体类型转换器实现
 

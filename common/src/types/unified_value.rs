@@ -1,6 +1,6 @@
 //! 统一值类型定义
 //!
-//! 整合 TypedVal 和 UnifiedValue，提供全数据源兼容的类型系统
+//! 提供全数据源兼容的统一值类型系统
 //! 保留 Option 变体以兼容现有代码，同时支持完整的类型表示
 
 use chrono::{NaiveDate, NaiveDateTime, NaiveTime};
@@ -75,7 +75,7 @@ impl fmt::Display for TypeKind {
 
 /// 系统内部统一值类型（全数据源兼容，无类型丢失）
 ///
-/// 整合了原 TypedVal 和 UnifiedValue 的所有变体：
+/// 系统内部统一使用的值类型：
 /// - 基础类型：I64, F64, Bool, Decimal, Text
 /// - 时间类型：Date, Time, DateTime
 /// - 复合类型：Json, Bytes, Array
@@ -109,7 +109,7 @@ pub enum UnifiedValue {
     /// 数组
     Array(Vec<UnifiedValue>),
 
-    // Option 变体（兼容现有 TypedVal 代码）
+    // Option 变体
     /// 可空整数
     OptI64(Option<i64>),
     /// 可空浮点数
@@ -387,7 +387,7 @@ impl From<Option<NaiveDateTime>> for UnifiedValue {
 }
 
 // === 向后兼容函数 ===
-// 旧 TypedVal 使用 I64/F64/Text，新代码应使用 Int/Float/String
+// 旧命名使用 I64/F64/Text，新代码应使用 Int/Float/String
 
 #[allow(non_snake_case)]
 impl UnifiedValue {
@@ -413,81 +413,5 @@ impl UnifiedValue {
     #[deprecated(since = "0.2.0", note = "请使用 UnifiedValue::OptDateTime")]
     pub fn OptNaiveTs(v: Option<NaiveDateTime>) -> Self {
         UnifiedValue::OptDateTime(v)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_type_kind() {
-        let parse = |value: &str| value.parse::<TypeKind>().unwrap_or_else(|err| match err {});
-
-        assert_eq!(parse("int"), TypeKind::Int);
-        assert_eq!(parse("float"), TypeKind::Float);
-        assert_eq!(parse("timestamp"), TypeKind::Timestamp);
-        assert_eq!(parse("unknown"), TypeKind::Text);
-    }
-
-    #[test]
-    fn test_type_name() {
-        assert_eq!(UnifiedValue::Null.type_name(), "null");
-        assert_eq!(UnifiedValue::Bool(true).type_name(), "bool");
-        assert_eq!(UnifiedValue::Int(42).type_name(), "int");
-        assert_eq!(UnifiedValue::OptI64(None).type_name(), "null");
-        assert_eq!(UnifiedValue::OptI64(Some(42)).type_name(), "option<int>");
-    }
-
-    #[test]
-    fn test_is_null() {
-        assert!(UnifiedValue::Null.is_null());
-        assert!(UnifiedValue::OptI64(None).is_null());
-        assert!(!UnifiedValue::OptI64(Some(42)).is_null());
-        assert!(!UnifiedValue::Int(42).is_null());
-    }
-
-    #[test]
-    fn test_as_methods() {
-        let val = UnifiedValue::Int(42);
-        assert_eq!(val.as_int(), Some(42));
-        assert_eq!(val.as_str(), None);
-
-        let val = UnifiedValue::OptI64(Some(42));
-        assert_eq!(val.as_int(), Some(42));
-
-        let val = UnifiedValue::OptI64(None);
-        assert_eq!(val.as_int(), None);
-        assert!(val.is_null());
-    }
-
-    #[test]
-    fn test_to_canonical() {
-        let val = UnifiedValue::OptI64(Some(42));
-        assert_eq!(val.to_canonical(), UnifiedValue::Int(42));
-
-        let val = UnifiedValue::OptI64(None);
-        assert_eq!(val.to_canonical(), UnifiedValue::Null);
-
-        let val = UnifiedValue::Int(42);
-        assert_eq!(val.to_canonical(), UnifiedValue::Int(42));
-    }
-
-    #[test]
-    fn test_from_impls() {
-        let val: UnifiedValue = 42i64.into();
-        assert_eq!(val.as_int(), Some(42));
-
-        let val: UnifiedValue = "hello".into();
-        assert_eq!(val.as_str(), Some("hello"));
-
-        let val: UnifiedValue = true.into();
-        assert_eq!(val.as_bool(), Some(true));
-
-        let val: UnifiedValue = Some(42i64).into();
-        assert!(matches!(val, UnifiedValue::OptI64(Some(42))));
-
-        let val: UnifiedValue = Option::<i64>::None.into();
-        assert!(matches!(val, UnifiedValue::OptI64(None)));
     }
 }

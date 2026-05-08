@@ -5,20 +5,18 @@
 use anyhow::Result;
 
 use async_trait::async_trait;
+use chrono::{Local, Offset};
 use clap::ValueEnum;
 use dashmap::DashMap;
-use sqlx::mysql::MySqlPoolOptions;
-use sqlx::postgres::PgPoolOptions;
+use sqlx::mysql::{MySqlConnectOptions, MySqlPoolOptions};
+use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 use sqlx::{MySqlPool, PgPool};
+use std::str::FromStr;
 use std::sync::OnceLock;
 use std::time::Duration;
 
 use super::util::{database_kind_from_opt_str, DbParams};
 use relus_common::types::UnifiedValue;
-
-// 向后兼容的类型别名
-#[allow(deprecated)]
-type TypedVal = UnifiedValue;
 
 /// Database type enumeration
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum, Hash)]
@@ -30,8 +28,8 @@ pub enum DatabaseKind {
 /// Database connection pool wrapper
 #[derive(Debug, Clone)]
 pub enum RdbmsPool {
-    Postgres(sqlx::PgPool),
-    Mysql(sqlx::MySqlPool),
+    Postgres(PgPool),
+    Mysql(MySqlPool),
 }
 
 /// Database pool configuration
@@ -41,6 +39,7 @@ pub struct PoolConfig {
     pub url: String,
     pub max_conns: u32,
     pub timeout_secs: Option<u64>,
+    pub timezone: String,
 }
 
 static DB_POOLS: OnceLock<DashMap<PoolConfig, RdbmsPool>> = OnceLock::new();
@@ -49,22 +48,40 @@ async fn create_pool(cfg: &PoolConfig) -> Result<RdbmsPool> {
     let timeout = Duration::from_secs(cfg.timeout_secs.unwrap_or(30));
     match cfg.kind {
         DatabaseKind::Postgres => {
+            let connect_options =
+                PgConnectOptions::from_str(&cfg.url)?.options([("timezone", cfg.timezone.clone())]);
             let pool = PgPoolOptions::new()
                 .max_connections(cfg.max_conns)
                 .acquire_timeout(timeout)
-                .connect(&cfg.url)
+                .connect_with(connect_options)
                 .await?;
             Ok(RdbmsPool::Postgres(pool))
         }
         DatabaseKind::Mysql => {
+            let connect_options = MySqlConnectOptions::from_str(&cfg.url)?
+                // sqlx 的 MySQL 默认会设置 time_zone='+00:00'。
+                // 这里显式使用配置时区；未配置时使用当前系统时区，避免本地时间被按 UTC 解释。
+                .timezone(cfg.timezone.clone());
             let pool = MySqlPoolOptions::new()
                 .max_connections(cfg.max_conns)
                 .acquire_timeout(timeout)
-                .connect(&cfg.url)
+                .connect_with(connect_options)
                 .await?;
             Ok(RdbmsPool::Mysql(pool))
         }
     }
+}
+
+fn current_system_timezone() -> String {
+    timezone_offset_string(Local::now().offset().fix().local_minus_utc())
+}
+
+fn timezone_offset_string(offset_seconds: i32) -> String {
+    let sign = if offset_seconds >= 0 { '+' } else { '-' };
+    let abs_seconds = offset_seconds.abs();
+    let hours = abs_seconds / 3600;
+    let minutes = (abs_seconds % 3600) / 60;
+    format!("{sign}{hours:02}:{minutes:02}")
 }
 
 /// Get or create a database connection pool
@@ -74,13 +91,16 @@ pub async fn get_db_pool(
     kind: DatabaseKind,
     max_conns: u32,
     timeout_secs: Option<u64>,
+    timezone: Option<String>,
 ) -> Result<RdbmsPool> {
     let pools: &DashMap<PoolConfig, RdbmsPool> = DB_POOLS.get_or_init(DashMap::new);
+    let timezone = timezone.unwrap_or_else(current_system_timezone);
     let key = PoolConfig {
         kind,
         url: url.to_string(),
         max_conns,
         timeout_secs,
+        timezone,
     };
     if let Some(pool) = pools.get(&key) {
         return Ok(pool.clone());
@@ -111,7 +131,7 @@ pub fn detect_database_kind(url: &str, explicit: Option<DatabaseKind>) -> Result
 pub async fn get_pool_from_query<T: DbParams>(q: &T) -> Result<RdbmsPool> {
     let db_url = q.resolve_url()?;
     let kind = detect_database_kind(&db_url, database_kind_from_opt_str(&q.resolve_type()))?;
-    get_db_pool(&db_url, kind, 5, None).await
+    get_db_pool(&db_url, kind, 5, None, None).await
 }
 
 /// 查询列值的动态类型承载
@@ -154,39 +174,7 @@ pub trait DatabaseExecutor: Send + Sync {
     async fn execute(&self, sql: &str) -> Result<u64>;
 
     /// 执行带参数的 SQL
-    async fn execute_with_params(&self, sql: &str, params: &[TypedVal]) -> Result<u64>;
-
-    /// 批量执行参数化 SQL
-    ///
-    /// 拼接顺序：base_sql + VALUES (?,?,?),(?,?) + suffix
-    /// suffix 用于 upsert 场景（ON DUPLICATE KEY UPDATE ... / ON CONFLICT ...）
-    async fn execute_batch(
-        &self,
-        base_sql: &str,
-        rows: &[Vec<TypedVal>],
-        suffix: &str,
-    ) -> Result<u64> {
-        if rows.is_empty() {
-            return Ok(0);
-        }
-        let mut sql = base_sql.to_string();
-        sql.push_str(" VALUES ");
-        for (i, row) in rows.iter().enumerate() {
-            if i > 0 {
-                sql.push_str(", ");
-            }
-            sql.push('(');
-            for j in 0..row.len() {
-                if j > 0 {
-                    sql.push_str(", ");
-                }
-                sql.push('?');
-            }
-            sql.push(')');
-        }
-        sql.push_str(suffix);
-        self.execute(&sql).await
-    }
+    async fn execute_with_params(&self, sql: &str, params: &[UnifiedValue]) -> Result<u64>;
 }
 
 /// PostgreSQL executor reference
@@ -220,51 +208,11 @@ impl DatabaseExecutor for PgExecutorRef {
         Ok(result.rows_affected())
     }
 
-    async fn execute_with_params(&self, sql: &str, params: &[TypedVal]) -> Result<u64> {
+    async fn execute_with_params(&self, sql: &str, params: &[UnifiedValue]) -> Result<u64> {
         let mut query = sqlx::query(sql);
         for p in params {
             query = bind_typed_val_pg(query, p);
         }
-        let result = query.execute(&self.pool).await?;
-        Ok(result.rows_affected())
-    }
-
-    async fn execute_batch(
-        &self,
-        base_sql: &str,
-        rows: &[Vec<TypedVal>],
-        suffix: &str,
-    ) -> Result<u64> {
-        if rows.is_empty() {
-            return Ok(0);
-        }
-
-        let col_count = rows[0].len();
-        let mut sql = base_sql.to_string();
-        sql.push_str(" VALUES ");
-
-        for (i, row) in rows.iter().enumerate() {
-            if i > 0 {
-                sql.push_str(", ");
-            }
-            sql.push('(');
-            for j in 0..row.len() {
-                if j > 0 {
-                    sql.push_str(", ");
-                }
-                sql.push_str(&format!("${}", i * col_count + j + 1));
-            }
-            sql.push(')');
-        }
-        sql.push_str(suffix);
-
-        let mut query = sqlx::query(&sql);
-        for row in rows {
-            for p in row {
-                query = bind_typed_val_pg(query, p);
-            }
-        }
-
         let result = query.execute(&self.pool).await?;
         Ok(result.rows_affected())
     }
@@ -355,50 +303,11 @@ impl DatabaseExecutor for MySqlExecutorRef {
         Ok(result.rows_affected())
     }
 
-    async fn execute_with_params(&self, sql: &str, params: &[TypedVal]) -> Result<u64> {
+    async fn execute_with_params(&self, sql: &str, params: &[UnifiedValue]) -> Result<u64> {
         let mut query = sqlx::query(sql);
         for p in params {
             query = bind_typed_val_my(query, p);
         }
-        let result = query.execute(&self.pool).await?;
-        Ok(result.rows_affected())
-    }
-
-    async fn execute_batch(
-        &self,
-        base_sql: &str,
-        rows: &[Vec<TypedVal>],
-        suffix: &str,
-    ) -> Result<u64> {
-        if rows.is_empty() {
-            return Ok(0);
-        }
-
-        let mut sql = base_sql.to_string();
-        sql.push_str(" VALUES ");
-
-        for (i, row) in rows.iter().enumerate() {
-            if i > 0 {
-                sql.push_str(", ");
-            }
-            sql.push('(');
-            for j in 0..row.len() {
-                if j > 0 {
-                    sql.push_str(", ");
-                }
-                sql.push('?');
-            }
-            sql.push(')');
-        }
-        sql.push_str(suffix);
-
-        let mut query = sqlx::query(&sql);
-        for row in rows {
-            for p in row {
-                query = bind_typed_val_my(query, p);
-            }
-        }
-
         let result = query.execute(&self.pool).await?;
         Ok(result.rows_affected())
     }

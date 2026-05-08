@@ -4,7 +4,7 @@ use crate::{ReadTask, SplitReaderResult, StreamMode};
 use anyhow::Result;
 use relus_common::constant::key::SPLIT_FACTOR;
 use relus_connector_rdbms::pool::{ColumnValue, DatabaseKind, RdbmsPool};
-use relus_connector_rdbms::sql_builder::{PkRangeSelect, SqlBuilder};
+use relus_connector_rdbms::sql_builder::{PkRangeSelect, RdbmsSqlBuilder};
 use relus_connector_rdbms::util::get_pool_from_config;
 use serde_json::Value as JsonValue;
 use tracing::{info, warn};
@@ -153,7 +153,7 @@ fn build_single_task(
     database_kind: DatabaseKind,
     conns: &[JsonValue],
 ) -> Vec<ReadTask> {
-    let query_sql = SqlBuilder::new(database_kind)
+    let query_sql = RdbmsSqlBuilder::new(database_kind)
         .select(&config.columns, &config.table)
         .where_raw_opt(config.where_clause.as_deref())
         .build();
@@ -210,7 +210,7 @@ async fn split_by_pk(
     };
 
     for (i, range) in ranges.iter().enumerate() {
-        let builder = SqlBuilder::new(database_kind);
+        let builder = RdbmsSqlBuilder::new(database_kind);
         let query_sql = match range {
             PkRange::Range { pk, min, max } => builder.pk_range_select(PkRangeSelect {
                 table: &config.table,
@@ -244,7 +244,7 @@ async fn split_by_pk(
         });
     }
 
-    let null_sql = SqlBuilder::new(database_kind).null_pk_select(
+    let null_sql = RdbmsSqlBuilder::new(database_kind).null_pk_select(
         &config.table,
         &config.columns,
         config.where_clause.as_deref(),
@@ -281,7 +281,7 @@ fn split_by_limit_offset(
         let offset = i * shard_size;
         let remaining = total_records.saturating_sub(offset);
         let limit = shard_size.min(remaining);
-        let query_sql = SqlBuilder::new(database_kind).limit_offset_select(
+        let query_sql = RdbmsSqlBuilder::new(database_kind).limit_offset_select(
             &config.table,
             &config.columns,
             config.where_clause.as_deref(),
@@ -324,7 +324,7 @@ async fn get_pk_range(
     split_pk: &str,
     where_clause: Option<&str>,
 ) -> Result<(Option<ColumnValue>, Option<ColumnValue>)> {
-    let sql = SqlBuilder::new(database_kind).pk_min_max(table, split_pk, where_clause);
+    let sql = RdbmsSqlBuilder::new(database_kind).pk_min_max(table, split_pk, where_clause);
     pool.executor().fetch_column_pair(&sql).await
 }
 

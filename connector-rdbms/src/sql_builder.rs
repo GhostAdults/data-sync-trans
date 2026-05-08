@@ -1,7 +1,25 @@
-//! RDBMS 写入 SQL 构建与执行
+//! RDBMS SQL 构建与写入执行。
 //!
-//! 提供按 WriteMode + DatabaseKind 生成正确 SQL 的函数组，
-//! 以及批量数据准备和执行写入的能力。
+//! 本模块负责把 Relus 的统一数据模型转换成具体数据库可执行的
+//! 参数化 SQL，并通过 `DatabaseExecutor` 执行写入。
+//!
+//! 设计边界：
+//! - SQL AST 层使用 `SqlBuilder<DB>` / `WriteSqlBuilder<DB>`，
+//!   通过 `DB: SqlBackend` 做编译期后端分派。
+//! - PostgreSQL/MySQL 的差异集中在 `PostgresBackend`、`MysqlBackend`
+//!   和对应的 `QueryFragment<DB>` 实现里。
+//! - 运行时数据库类型只在 `RdbmsSqlBuilder` 或 `execute_rdbms_write`
+//!   这种 RDBMS facade 边界 match 一次。
+//! - writer 层只需要传入 `WriteRows`、目标表、写入模式和 key_columns，
+//!   不需要了解 SQL 占位符、identifier 引号或 upsert 方言差异。
+//!
+//! 读侧主要入口：
+//! - `SqlBuilder<DB>`：已知后端类型时使用。
+//! - `RdbmsSqlBuilder`：只有 `DatabaseKind` / `RdbmsPool` 时使用。
+//!
+//! 写侧主要入口：
+//! - `WriteRows`：列名和多行值的输入模型。
+//! - `execute_rdbms_write`：writer 调用的统一执行入口。
 
 use anyhow::{bail, Result};
 use std::marker::PhantomData;
@@ -13,17 +31,29 @@ use relus_common::types::UnifiedValue;
 use super::pool::{DatabaseKind, RdbmsPool};
 
 #[derive(Debug, Clone, Copy)]
-struct PostgresBackend;
+pub struct PostgresBackend;
 
 #[derive(Debug, Clone, Copy)]
-struct MysqlBackend;
+pub struct MysqlBackend;
 
-trait SqlBackend {
+/// SQL 方言能力接口。
+///
+/// 每个数据库后端通过实现该 trait 定义 identifier 引用规则、
+/// select 列表达式处理方式、占位符格式和 upsert key 约束。
+pub trait SqlBackend {
+    /// 当前后端执行 upsert 时是否必须显式指定冲突列。
     const REQUIRES_UPSERT_KEYS: bool;
 
+    /// 将逻辑 identifier 转成当前后端可用的 SQL identifier。
     fn identifier(identifier: &str) -> String;
+
+    /// 将用户传入的列列表转换成当前后端的 select 列表达式。
     fn column_list(columns: &str) -> String;
+
+    /// 将单个 identifier 追加到 SQL buffer。
     fn push_identifier(out: &mut String, ident: &str);
+
+    /// 将当前后端的参数占位符追加到 SQL buffer。
     fn push_placeholder(out: &mut String, bind_index: &mut usize);
 }
 
@@ -100,47 +130,65 @@ fn postgres_column_expr(column: &str) -> String {
     }
 }
 
-macro_rules! dispatch_backend {
-    ($kind:expr, |$backend:ident| $body:expr) => {{
-        match $kind {
-            DatabaseKind::Postgres => {
-                type $backend = PostgresBackend;
-                $body
-            }
-            DatabaseKind::Mysql => {
-                type $backend = MysqlBackend;
-                $body
-            }
-        }
-    }};
-}
-
-/// Lightweight SQL builder for read-side query construction.
+/// 读侧 SQL 构建器。
+///
+/// `DB` 是具体数据库后端，例如 `PostgresBackend` 或 `MysqlBackend`。
+/// 当调用方已经知道后端类型时，优先使用该泛型 builder，避免在
+/// SQL AST 层做运行时分支。
 #[derive(Debug, Clone, Copy)]
-pub struct SqlBuilder {
-    kind: DatabaseKind,
+pub struct SqlBuilder<DB> {
+    _backend: PhantomData<DB>,
 }
 
+/// RDBMS 读侧 SQL facade。
+///
+/// 当调用方只有 `DatabaseKind` 或 `RdbmsPool` 时使用该 enum。
+/// 它只在边界处 match 一次，然后委托给具体的 `SqlBuilder<DB>`。
+#[derive(Debug, Clone, Copy)]
+pub enum RdbmsSqlBuilder {
+    /// PostgreSQL 读侧 SQL builder。
+    Postgres(SqlBuilder<PostgresBackend>),
+    /// MySQL 读侧 SQL builder。
+    Mysql(SqlBuilder<MysqlBackend>),
+}
+
+/// 主键范围查询参数。
+///
+/// 用于 reader 按主键范围拆分任务时生成形如
+/// `pk >= min AND pk < max` 或 `pk >= min AND pk <= max` 的查询。
 #[derive(Debug, Clone, Copy)]
 pub struct PkRangeSelect<'a> {
+    /// 查询表名。
     pub table: &'a str,
+    /// 查询列列表，通常来自 reader 配置。
     pub columns: &'a str,
+    /// 额外 where 条件，会和主键范围条件用 AND 拼接。
     pub where_clause: Option<&'a str>,
+    /// 用于分片的主键列。
     pub pk: &'a str,
+    /// 范围起始值。
     pub min: &'a str,
+    /// 范围结束值。
     pub max: &'a str,
+    /// 是否包含结束值。
     pub inclusive_end: bool,
 }
 
-impl SqlBuilder {
-    pub fn new(kind: DatabaseKind) -> Self {
-        Self { kind }
+impl<DB> Default for SqlBuilder<DB> {
+    fn default() -> Self {
+        Self {
+            _backend: PhantomData,
+        }
+    }
+}
+
+impl<DB: SqlBackend> SqlBuilder<DB> {
+    pub fn new() -> Self {
+        Self::default()
     }
 
     pub fn select(&self, columns: &str, table: &str) -> SelectBuilder {
-        dispatch_backend!(self.kind, |DB| SelectSqlBuilder::<DB>::select(
-            columns, table
-        ))
+        SelectSqlBuilder::<DB>::select(columns, table)
     }
 
     pub fn custom_query(&self, query: &str) -> SelectBuilder {
@@ -155,15 +203,11 @@ impl SqlBuilder {
     }
 
     pub fn pk_min_max(&self, table: &str, pk: &str, where_clause: Option<&str>) -> String {
-        dispatch_backend!(self.kind, |DB| {
-            SelectSqlBuilder::<DB>::pk_min_max(table, pk, where_clause)
-        })
+        SelectSqlBuilder::<DB>::pk_min_max(table, pk, where_clause)
     }
 
     pub fn pk_range_select(&self, range: PkRangeSelect<'_>) -> String {
-        dispatch_backend!(self.kind, |DB| SelectSqlBuilder::<DB>::pk_range_select(
-            range
-        ))
+        SelectSqlBuilder::<DB>::pk_range_select(range)
     }
 
     pub fn null_pk_select(
@@ -173,9 +217,7 @@ impl SqlBuilder {
         where_clause: Option<&str>,
         pk: &str,
     ) -> String {
-        dispatch_backend!(self.kind, |DB| {
-            SelectSqlBuilder::<DB>::null_pk_select(table, columns, where_clause, pk)
-        })
+        SelectSqlBuilder::<DB>::null_pk_select(table, columns, where_clause, pk)
     }
 
     pub fn limit_offset_select(
@@ -186,9 +228,7 @@ impl SqlBuilder {
         limit: usize,
         offset: usize,
     ) -> String {
-        dispatch_backend!(self.kind, |DB| {
-            SelectSqlBuilder::<DB>::limit_offset_select(table, columns, where_clause, limit, offset)
-        })
+        SelectSqlBuilder::<DB>::limit_offset_select(table, columns, where_clause, limit, offset)
     }
 
     pub fn literal_string(value: &str) -> String {
@@ -196,7 +236,96 @@ impl SqlBuilder {
     }
 
     pub fn column_list(&self, columns: &str) -> String {
-        dispatch_backend!(self.kind, |DB| DB::column_list(columns))
+        DB::column_list(columns)
+    }
+}
+
+impl RdbmsSqlBuilder {
+    pub fn new(kind: DatabaseKind) -> Self {
+        match kind {
+            DatabaseKind::Postgres => Self::Postgres(SqlBuilder::<PostgresBackend>::new()),
+            DatabaseKind::Mysql => Self::Mysql(SqlBuilder::<MysqlBackend>::new()),
+        }
+    }
+
+    pub fn from_pool(pool: &RdbmsPool) -> Self {
+        match pool {
+            RdbmsPool::Postgres(_) => Self::Postgres(SqlBuilder::<PostgresBackend>::new()),
+            RdbmsPool::Mysql(_) => Self::Mysql(SqlBuilder::<MysqlBackend>::new()),
+        }
+    }
+
+    pub fn select(&self, columns: &str, table: &str) -> SelectBuilder {
+        match self {
+            Self::Postgres(builder) => builder.select(columns, table),
+            Self::Mysql(builder) => builder.select(columns, table),
+        }
+    }
+
+    pub fn custom_query(&self, query: &str) -> SelectBuilder {
+        match self {
+            Self::Postgres(builder) => builder.custom_query(query),
+            Self::Mysql(builder) => builder.custom_query(query),
+        }
+    }
+
+    pub fn count(&self, table: &str, custom_query: Option<&str>) -> String {
+        match self {
+            Self::Postgres(builder) => builder.count(table, custom_query),
+            Self::Mysql(builder) => builder.count(table, custom_query),
+        }
+    }
+
+    pub fn pk_min_max(&self, table: &str, pk: &str, where_clause: Option<&str>) -> String {
+        match self {
+            Self::Postgres(builder) => builder.pk_min_max(table, pk, where_clause),
+            Self::Mysql(builder) => builder.pk_min_max(table, pk, where_clause),
+        }
+    }
+
+    pub fn pk_range_select(&self, range: PkRangeSelect<'_>) -> String {
+        match self {
+            Self::Postgres(builder) => builder.pk_range_select(range),
+            Self::Mysql(builder) => builder.pk_range_select(range),
+        }
+    }
+
+    pub fn null_pk_select(
+        &self,
+        table: &str,
+        columns: &str,
+        where_clause: Option<&str>,
+        pk: &str,
+    ) -> String {
+        match self {
+            Self::Postgres(builder) => builder.null_pk_select(table, columns, where_clause, pk),
+            Self::Mysql(builder) => builder.null_pk_select(table, columns, where_clause, pk),
+        }
+    }
+
+    pub fn limit_offset_select(
+        &self,
+        table: &str,
+        columns: &str,
+        where_clause: Option<&str>,
+        limit: usize,
+        offset: usize,
+    ) -> String {
+        match self {
+            Self::Postgres(builder) => {
+                builder.limit_offset_select(table, columns, where_clause, limit, offset)
+            }
+            Self::Mysql(builder) => {
+                builder.limit_offset_select(table, columns, where_clause, limit, offset)
+            }
+        }
+    }
+
+    pub fn column_list(&self, columns: &str) -> String {
+        match self {
+            Self::Postgres(builder) => builder.column_list(columns),
+            Self::Mysql(builder) => builder.column_list(columns),
+        }
     }
 }
 
@@ -219,8 +348,8 @@ impl<DB: SqlBackend> SelectSqlBuilder<DB> {
 
     fn pk_range_select(range: PkRangeSelect<'_>) -> String {
         let pk = DB::identifier(range.pk);
-        let min = SqlBuilder::literal_string(range.min);
-        let max = SqlBuilder::literal_string(range.max);
+        let min = SqlBuilder::<DB>::literal_string(range.min);
+        let max = SqlBuilder::<DB>::literal_string(range.max);
         let end_op = if range.inclusive_end { "<=" } else { "<" };
         let range_condition = format!("{} >= {} AND {} {} {}", pk, min, pk, end_op, max);
 
@@ -252,6 +381,10 @@ impl<DB: SqlBackend> SelectSqlBuilder<DB> {
     }
 }
 
+/// 可链式追加条件和分页的 SELECT SQL 构建结果。
+///
+/// `SqlBuilder<DB>::select` 和 `custom_query` 返回该类型，
+/// 调用方可以继续追加 where、limit/offset，最后通过 `build` 得到 SQL 字符串。
 #[derive(Debug, Clone)]
 pub struct SelectBuilder {
     source: SelectSource,
@@ -330,150 +463,94 @@ impl SelectBuilder {
     }
 }
 
-/// 写入批次数据
-pub struct WriteBatch {
-    /// SQL 前缀（INSERT INTO t (cols) / UPDATE t SET / DELETE FROM t）
-    pub sql: String,
-    /// upsert 模式的 VALUES 后缀，其他模式为 None
-    pub upsert_suffix: Option<String>,
-    pub table_name: String,
-    pub rows: Vec<Vec<UnifiedValue>>,
-    pub columns: Vec<String>,
-    pub key_columns: Vec<String>,
-    pub mode: WriteMode,
-}
-
-/// SQL text plus flattened bind values prepared by the SQL builder.
+/// SQL builder 生成的参数化 SQL 和绑定值。
+#[derive(Debug, Clone, PartialEq)]
 pub struct BuiltWriteQuery {
+    /// 参数化 SQL，例如 PostgreSQL 使用 `$1`，MySQL 使用 `?`。
     pub sql: String,
+    /// 按 SQL 占位符出现顺序展开后的参数值。
     pub params: Vec<UnifiedValue>,
 }
 
-impl WriteBatch {
-    pub fn build_values_query(
-        &self,
-        rows: &[Vec<UnifiedValue>],
-        kind: DatabaseKind,
-    ) -> Result<BuiltWriteQuery> {
-        ensure_row_width(rows, self.columns.len())?;
-        let suffix = self.upsert_suffix.as_deref().unwrap_or("");
-        build_values_query(&self.sql, rows, suffix, kind)
-    }
-
-    pub fn build_row_query(
-        &self,
-        row: &[UnifiedValue],
-        kind: DatabaseKind,
-    ) -> Result<BuiltWriteQuery> {
-        ensure_row_width_for_row(row, self.columns.len())?;
-        match self.mode {
-            WriteMode::Insert | WriteMode::Upsert => {
-                let rows = vec![row.to_vec()];
-                self.build_values_query(&rows, kind)
-            }
-            WriteMode::Update => build_update_query(
-                &self.table_name,
-                &self.columns,
-                row,
-                &self.key_columns,
-                kind,
-            ),
-            WriteMode::Delete => build_delete_query(
-                &self.table_name,
-                &self.columns,
-                row,
-                &self.key_columns,
-                kind,
-            ),
-        }
-    }
-}
-
-/// Column/value rows extracted from mapped pipeline rows.
+/// RDBMS 写入行模型。
+///
+/// `columns` 表示目标表写入列顺序；`values` 中每个 `Vec<UnifiedValue>` 都是一行数据，
+/// 且每个 value 的位置必须和 `columns` 中的列位置一一对应。
+/// 例如 `columns = ["id", "name"]` 时，`values[0] = [1, "Alice"]`
+/// 表示 `id = 1, name = "Alice"`。
 pub struct WriteRows {
+    /// 目标表列名，决定 SQL 字段顺序和每行 value 的解释方式。
     pub columns: Vec<String>,
-    pub rows: Vec<Vec<UnifiedValue>>,
+    /// 多行写入值；内层 value 按 `columns` 的顺序排列。
+    pub values: Vec<Vec<UnifiedValue>>,
 }
 
 impl WriteRows {
-    pub fn new(columns: Vec<String>, rows: Vec<Vec<UnifiedValue>>) -> Self {
-        Self { columns, rows }
+    pub fn new(columns: Vec<String>, values: Vec<Vec<UnifiedValue>>) -> Self {
+        Self { columns, values }
     }
+}
 
-    pub fn table(self, table: impl Into<String>) -> WriteBatchBuilder {
-        WriteBatchBuilder {
-            rows: self,
-            table_name: table.into(),
-            key_columns: Vec::new(),
-            mode: WriteMode::Insert,
-            kind: DatabaseKind::Mysql,
+/// Stateless write-side SQL builder using compile-time backend dispatch.
+struct WriteSqlBuilder<DB> {
+    _backend: PhantomData<DB>,
+}
+
+impl<DB> Default for WriteSqlBuilder<DB> {
+    fn default() -> Self {
+        Self {
+            _backend: PhantomData,
         }
     }
 }
 
-/// Chainable builder that turns extracted write rows into executable SQL batch metadata.
-pub struct WriteBatchBuilder {
-    rows: WriteRows,
-    table_name: String,
-    key_columns: Vec<String>,
-    mode: WriteMode,
-    kind: DatabaseKind,
-}
-
-impl WriteBatchBuilder {
-    pub fn key_columns(mut self, key_columns: &[String]) -> Self {
-        self.key_columns = key_columns.to_vec();
-        self
-    }
-
-    pub fn mode(mut self, mode: WriteMode) -> Self {
-        self.mode = mode;
-        self
-    }
-
-    pub fn database_kind(mut self, kind: DatabaseKind) -> Self {
-        self.kind = kind;
-        self
-    }
-
-    pub fn build(self) -> Result<WriteBatch> {
-        if self.rows.rows.is_empty() {
-            bail!("没有数据需要同步");
-        }
-
-        let (keys, nonkeys) = split_keys_nonkeys(&self.rows.columns, &self.key_columns);
-
-        let (sql, upsert_suffix) = match self.mode {
-            WriteMode::Insert => (
-                build_insert_sql(&self.table_name, &self.rows.columns, self.kind),
-                None,
+impl<DB: SqlBackend> WriteSqlBuilder<DB>
+where
+    for<'a> ConflictFragment<'a, DB>: QueryFragment<DB>,
+{
+    pub fn build_many(
+        table: &str,
+        mode: WriteMode,
+        key_columns: &[String],
+        columns: &[String],
+        rows: &[Vec<UnifiedValue>],
+    ) -> Result<BuiltWriteQuery> {
+        ensure_row_width(rows, columns.len())?;
+        match mode {
+            WriteMode::Insert => build_values_query_with_backend::<DB>(
+                &build_insert_sql_with_backend::<DB>(table, columns),
+                rows,
+                "",
             ),
             WriteMode::Upsert => {
-                let parts = build_upsert_sql(
-                    &self.table_name,
-                    &self.rows.columns,
-                    &keys,
-                    &nonkeys,
-                    self.kind,
-                )?;
-                (parts.prefix, Some(parts.suffix))
+                let (keys, nonkeys) = split_keys_nonkeys(columns, key_columns);
+                let parts = build_upsert_sql_with_backend::<DB>(table, columns, &keys, &nonkeys)?;
+                build_values_query_with_backend::<DB>(&parts.prefix, rows, &parts.suffix)
             }
-            WriteMode::Update => (
-                build_update_sql(&self.table_name, &nonkeys, &keys, self.kind)?,
-                None,
-            ),
-            WriteMode::Delete => (build_delete_sql(&self.table_name, &keys, self.kind)?, None),
-        };
+            WriteMode::Update | WriteMode::Delete => {
+                bail!("{} 模式不支持批量 VALUES SQL", mode.as_str())
+            }
+        }
+    }
 
-        Ok(WriteBatch {
-            sql,
-            upsert_suffix,
-            table_name: self.table_name,
-            rows: self.rows.rows,
-            columns: self.rows.columns,
-            key_columns: self.key_columns,
-            mode: self.mode,
-        })
+    pub fn build_one(
+        table: &str,
+        mode: WriteMode,
+        key_columns: &[String],
+        columns: &[String],
+        row: &[UnifiedValue],
+    ) -> Result<BuiltWriteQuery> {
+        match mode {
+            WriteMode::Insert | WriteMode::Upsert => {
+                Self::build_many(table, mode, key_columns, columns, &[row.to_vec()])
+            }
+            WriteMode::Update => {
+                build_update_query_with_backend::<DB>(table, columns, row, key_columns)
+            }
+            WriteMode::Delete => {
+                build_delete_query_with_backend::<DB>(table, columns, row, key_columns)
+            }
+        }
     }
 }
 
@@ -549,7 +626,6 @@ impl<DB: SqlBackend> QueryFragment<DB> for ColumnList<'_> {
 
 #[derive(Debug, Clone, Copy)]
 enum AssignmentValue {
-    Placeholder,
     Excluded,
     Values,
 }
@@ -570,7 +646,6 @@ impl<DB: SqlBackend> QueryFragment<DB> for Assignments<'_> {
             out.push_sql(" = ");
 
             match self.value {
-                AssignmentValue::Placeholder => out.push_sql("?"),
                 AssignmentValue::Excluded => {
                     out.push_sql("EXCLUDED.");
                     out.push_ident(column);
@@ -581,23 +656,6 @@ impl<DB: SqlBackend> QueryFragment<DB> for Assignments<'_> {
                     out.push_sql(")");
                 }
             }
-        }
-    }
-}
-
-struct WhereKeys<'a> {
-    keys: &'a [String],
-}
-
-impl<DB: SqlBackend> QueryFragment<DB> for WhereKeys<'_> {
-    fn walk_ast(&self, out: &mut BuildCtx<DB>) {
-        for (i, key) in self.keys.iter().enumerate() {
-            if i > 0 {
-                out.push_sql(" AND ");
-            }
-
-            out.push_ident(key);
-            out.push_sql(" = ?");
         }
     }
 }
@@ -647,41 +705,6 @@ impl QueryFragment<MysqlBackend> for ConflictFragment<'_, MysqlBackend> {
             value: AssignmentValue::Values,
         }
         .walk_ast(out);
-    }
-}
-
-struct UpdateStatement<'a> {
-    table: &'a str,
-    nonkeys: &'a [String],
-    keys: &'a [String],
-}
-
-impl<DB: SqlBackend> QueryFragment<DB> for UpdateStatement<'_> {
-    fn walk_ast(&self, out: &mut BuildCtx<DB>) {
-        out.push_sql("UPDATE ");
-        out.push_table(self.table);
-        out.push_sql(" SET ");
-        Assignments {
-            columns: self.nonkeys,
-            value: AssignmentValue::Placeholder,
-        }
-        .walk_ast(out);
-        out.push_sql(" WHERE ");
-        WhereKeys { keys: self.keys }.walk_ast(out);
-    }
-}
-
-struct DeleteStatement<'a> {
-    table: &'a str,
-    keys: &'a [String],
-}
-
-impl<DB: SqlBackend> QueryFragment<DB> for DeleteStatement<'_> {
-    fn walk_ast(&self, out: &mut BuildCtx<DB>) {
-        out.push_sql("DELETE FROM ");
-        out.push_table(self.table);
-        out.push_sql(" WHERE ");
-        WhereKeys { keys: self.keys }.walk_ast(out);
     }
 }
 
@@ -805,7 +828,7 @@ mod tests {
 
     #[test]
     fn select_quotes_postgres_columns_only() {
-        let sql = SqlBuilder::new(DatabaseKind::Postgres)
+        let sql = SqlBuilder::<PostgresBackend>::new()
             .select("id, name", "users")
             .build();
         println!("Generated SQL: {}", sql);
@@ -814,7 +837,7 @@ mod tests {
 
     #[test]
     fn select_keeps_mysql_columns() {
-        let sql = SqlBuilder::new(DatabaseKind::Mysql)
+        let sql = SqlBuilder::<MysqlBackend>::new()
             .select("id, name", "users")
             .build();
 
@@ -823,7 +846,7 @@ mod tests {
 
     #[test]
     fn count_supports_table_and_custom_query() {
-        let builder = SqlBuilder::new(DatabaseKind::Mysql);
+        let builder = SqlBuilder::<MysqlBackend>::new();
 
         assert_eq!(builder.count("users", None), "SELECT COUNT(*) FROM users");
         assert_eq!(
@@ -834,7 +857,7 @@ mod tests {
 
     #[test]
     fn range_query_combines_where_clause() {
-        let sql = SqlBuilder::new(DatabaseKind::Postgres).pk_range_select(PkRangeSelect {
+        let sql = SqlBuilder::<PostgresBackend>::new().pk_range_select(PkRangeSelect {
             table: "users",
             columns: "id, name",
             where_clause: Some("active = true"),
@@ -852,7 +875,7 @@ mod tests {
 
     #[test]
     fn null_pk_query_combines_where_clause() {
-        let sql = SqlBuilder::new(DatabaseKind::Mysql).null_pk_select(
+        let sql = SqlBuilder::<MysqlBackend>::new().null_pk_select(
             "users",
             "id, name",
             Some("active = 1"),
@@ -867,7 +890,7 @@ mod tests {
 
     #[test]
     fn limit_offset_query() {
-        let sql = SqlBuilder::new(DatabaseKind::Mysql).limit_offset_select(
+        let sql = SqlBuilder::<MysqlBackend>::new().limit_offset_select(
             "users",
             "id, name",
             Some("active = 1"),
@@ -883,27 +906,24 @@ mod tests {
 
     #[test]
     fn literal_string_escapes_single_quote() {
-        assert_eq!(SqlBuilder::literal_string("O'Reilly"), "'O''Reilly'");
+        assert_eq!(
+            SqlBuilder::<MysqlBackend>::literal_string("O'Reilly"),
+            "'O''Reilly'"
+        );
     }
 
     #[test]
-    fn write_rows_builds_insert_batch_through_chain() {
+    fn write_rows_only_keeps_columns_and_rows() {
         let columns = vec!["id".to_string(), "name".to_string()];
         let rows = vec![vec![
             UnifiedValue::Int(1),
             UnifiedValue::String("Alice".to_string()),
         ]];
 
-        let batch = WriteRows::new(columns, rows)
-            .table("users")
-            .mode(WriteMode::Insert)
-            .database_kind(DatabaseKind::Postgres)
-            .build()
-            .unwrap();
+        let write_rows = WriteRows::new(columns.clone(), rows.clone());
 
-        assert_eq!(batch.sql, "INSERT INTO users (\"id\", \"name\")");
-        assert_eq!(batch.rows.len(), 1);
-        assert_eq!(batch.columns, vec!["id".to_string(), "name".to_string()]);
+        assert_eq!(write_rows.columns, columns);
+        assert_eq!(write_rows.values, rows);
     }
 
     #[test]
@@ -911,11 +931,11 @@ mod tests {
         let columns = vec!["id".to_string(), "name".to_string()];
 
         assert_eq!(
-            build_insert_sql("users", &columns, DatabaseKind::Postgres),
+            build_insert_sql_with_backend::<PostgresBackend>("users", &columns),
             "INSERT INTO users (\"id\", \"name\")"
         );
         assert_eq!(
-            build_insert_sql("users", &columns, DatabaseKind::Mysql),
+            build_insert_sql_with_backend::<MysqlBackend>("users", &columns),
             "INSERT INTO users (id, name)"
         );
     }
@@ -924,10 +944,11 @@ mod tests {
     fn upsert_sql_keeps_existing_postgres_output() {
         let columns = vec!["id".to_string(), "name".to_string(), "age".to_string()];
         let keys = vec!["id".to_string()];
-        let nonkeys = vec!["name".to_string(), "age".to_string()];
+        let nonkeys: Vec<String> = vec!["name".to_string(), "age".to_string()];
 
         let parts =
-            build_upsert_sql("users", &columns, &keys, &nonkeys, DatabaseKind::Postgres).unwrap();
+            build_upsert_sql_with_backend::<PostgresBackend>("users", &columns, &keys, &nonkeys)
+                .unwrap();
 
         assert_eq!(
             parts.prefix,
@@ -946,7 +967,8 @@ mod tests {
         let nonkeys = vec!["name".to_string(), "age".to_string()];
 
         let parts =
-            build_upsert_sql("users", &columns, &keys, &nonkeys, DatabaseKind::Mysql).unwrap();
+            build_upsert_sql_with_backend::<MysqlBackend>("users", &columns, &keys, &nonkeys)
+                .unwrap();
 
         assert_eq!(parts.prefix, "INSERT INTO users (id, name, age)");
         assert_eq!(
@@ -956,22 +978,7 @@ mod tests {
     }
 
     #[test]
-    fn update_sql_keeps_existing_dialect_output() {
-        let nonkeys = vec!["name".to_string(), "age".to_string()];
-        let keys = vec!["id".to_string()];
-
-        assert_eq!(
-            build_update_sql("users", &nonkeys, &keys, DatabaseKind::Postgres).unwrap(),
-            "UPDATE users SET \"name\" = ?, \"age\" = ? WHERE \"id\" = ?"
-        );
-        assert_eq!(
-            build_update_sql("users", &nonkeys, &keys, DatabaseKind::Mysql).unwrap(),
-            "UPDATE users SET name = ?, age = ? WHERE id = ?"
-        );
-    }
-
-    #[test]
-    fn write_rows_builds_upsert_and_update_batches_through_chain() {
+    fn write_sql_builder_builds_upsert_and_update_queries() {
         let columns = vec!["id".to_string(), "name".to_string()];
         let rows = vec![vec![
             UnifiedValue::Int(1),
@@ -979,28 +986,28 @@ mod tests {
         ]];
         let keys = vec!["id".to_string()];
 
-        let upsert = WriteRows::new(columns.clone(), rows.clone())
-            .table("users")
-            .key_columns(&keys)
-            .mode(WriteMode::Upsert)
-            .database_kind(DatabaseKind::Postgres)
-            .build()
-            .unwrap();
-        assert_eq!(upsert.sql, "INSERT INTO users (\"id\", \"name\")");
+        let upsert = WriteSqlBuilder::<PostgresBackend>::build_many(
+            "users",
+            WriteMode::Upsert,
+            &keys,
+            &columns,
+            &rows,
+        )
+        .unwrap();
         assert_eq!(
-            upsert.upsert_suffix.as_deref(),
-            Some(" ON CONFLICT (\"id\") DO UPDATE SET \"name\" = EXCLUDED.\"name\"")
+            upsert.sql,
+            "INSERT INTO users (\"id\", \"name\") VALUES ($1, $2) ON CONFLICT (\"id\") DO UPDATE SET \"name\" = EXCLUDED.\"name\""
         );
 
-        let update = WriteRows::new(columns, rows)
-            .table("users")
-            .key_columns(&keys)
-            .mode(WriteMode::Update)
-            .database_kind(DatabaseKind::Mysql)
-            .build()
-            .unwrap();
+        let update = WriteSqlBuilder::<MysqlBackend>::build_one(
+            "users",
+            WriteMode::Update,
+            &keys,
+            &columns,
+            &rows[0],
+        )
+        .unwrap();
         assert_eq!(update.sql, "UPDATE users SET name = ? WHERE id = ?");
-        assert!(update.upsert_suffix.is_none());
     }
 
     #[test]
@@ -1017,15 +1024,14 @@ mod tests {
             ],
         ];
 
-        let batch = WriteRows::new(columns, rows)
-            .table("users")
-            .mode(WriteMode::Insert)
-            .database_kind(DatabaseKind::Postgres)
-            .build()
-            .unwrap();
-        let query = batch
-            .build_values_query(&batch.rows, DatabaseKind::Postgres)
-            .unwrap();
+        let query = WriteSqlBuilder::<PostgresBackend>::build_many(
+            "users",
+            WriteMode::Insert,
+            &[],
+            &columns,
+            &rows,
+        )
+        .unwrap();
 
         assert_eq!(
             query.sql,
@@ -1051,16 +1057,14 @@ mod tests {
         ]];
         let keys = vec!["id".to_string()];
 
-        let batch = WriteRows::new(columns, rows)
-            .table("users")
-            .key_columns(&keys)
-            .mode(WriteMode::Upsert)
-            .database_kind(DatabaseKind::Mysql)
-            .build()
-            .unwrap();
-        let query = batch
-            .build_values_query(&batch.rows, DatabaseKind::Mysql)
-            .unwrap();
+        let query = WriteSqlBuilder::<MysqlBackend>::build_many(
+            "users",
+            WriteMode::Upsert,
+            &keys,
+            &columns,
+            &rows,
+        )
+        .unwrap();
 
         assert_eq!(
             query.sql,
@@ -1076,6 +1080,43 @@ mod tests {
     }
 
     #[test]
+    fn postgres_upsert_requires_key_columns() {
+        let columns = vec!["id".to_string(), "name".to_string()];
+        let rows = vec![vec![
+            UnifiedValue::Int(1),
+            UnifiedValue::String("Alice".to_string()),
+        ]];
+
+        let err = WriteSqlBuilder::<PostgresBackend>::build_many(
+            "users",
+            WriteMode::Upsert,
+            &[],
+            &columns,
+            &rows,
+        )
+        .unwrap_err();
+
+        assert!(err.to_string().contains("upsert 模式需要指定 key_columns"));
+    }
+
+    #[test]
+    fn write_sql_builder_rejects_mismatched_row_width() {
+        let columns = vec!["id".to_string(), "name".to_string()];
+        let rows = vec![vec![UnifiedValue::Int(1)]];
+
+        let err = WriteSqlBuilder::<MysqlBackend>::build_many(
+            "users",
+            WriteMode::Insert,
+            &[],
+            &columns,
+            &rows,
+        )
+        .unwrap_err();
+
+        assert!(err.to_string().contains("写入数据列数不匹配"));
+    }
+
+    #[test]
     fn update_query_reorders_values_by_sql_columns() {
         let columns = vec!["id".to_string(), "name".to_string(), "age".to_string()];
         let row = vec![
@@ -1085,8 +1126,14 @@ mod tests {
         ];
         let keys = vec!["id".to_string()];
 
-        let query =
-            build_update_query("users", &columns, &row, &keys, DatabaseKind::Postgres).unwrap();
+        let query = WriteSqlBuilder::<PostgresBackend>::build_one(
+            "users",
+            WriteMode::Update,
+            &keys,
+            &columns,
+            &row,
+        )
+        .unwrap();
 
         assert_eq!(
             query.sql,
@@ -1111,8 +1158,14 @@ mod tests {
         ];
         let keys = vec!["id".to_string()];
 
-        let query =
-            build_delete_query("users", &columns, &row, &keys, DatabaseKind::Mysql).unwrap();
+        let query = WriteSqlBuilder::<MysqlBackend>::build_one(
+            "users",
+            WriteMode::Delete,
+            &keys,
+            &columns,
+            &row,
+        )
+        .unwrap();
 
         assert_eq!(query.sql, "DELETE FROM users WHERE id = ?");
         assert_eq!(query.params, vec![UnifiedValue::Int(1)]);
@@ -1143,13 +1196,6 @@ pub fn split_keys_nonkeys(all_cols: &[String], key_cols: &[String]) -> (Vec<Stri
     (keys, nonkeys)
 }
 
-/// 构建 INSERT SQL（不含 VALUES，由 execute_batch 拼接）
-pub fn build_insert_sql(table: &str, columns: &[String], kind: DatabaseKind) -> String {
-    dispatch_backend!(kind, |DB| build_insert_sql_with_backend::<DB>(
-        table, columns
-    ))
-}
-
 fn build_insert_sql_with_backend<DB: SqlBackend>(table: &str, columns: &[String]) -> String {
     let mut ctx = BuildCtx::<DB>::new();
     InsertStatement { table, columns }.walk_ast(&mut ctx);
@@ -1162,21 +1208,6 @@ pub struct UpsertParts {
     pub prefix: String,
     /// `ON DUPLICATE KEY UPDATE ...` 或 `ON CONFLICT (...) DO UPDATE SET ...`
     pub suffix: String,
-}
-
-/// 构建 upsert SQL，拆为 prefix + suffix
-///
-/// execute_batch 拼接顺序：prefix + VALUES (?,?,?) + suffix
-pub fn build_upsert_sql(
-    table: &str,
-    columns: &[String],
-    keys: &[String],
-    nonkeys: &[String],
-    kind: DatabaseKind,
-) -> Result<UpsertParts> {
-    dispatch_backend!(kind, |DB| build_upsert_sql_with_backend::<DB>(
-        table, columns, keys, nonkeys
-    ))
 }
 
 fn build_upsert_sql_with_backend<DB: SqlBackend>(
@@ -1206,64 +1237,6 @@ where
     Ok(UpsertParts { prefix, suffix })
 }
 
-/// 构建 UPDATE SQL（完整带占位符，走 execute_with_params 逐行执行）
-pub fn build_update_sql(
-    table: &str,
-    nonkeys: &[String],
-    keys: &[String],
-    kind: DatabaseKind,
-) -> Result<String> {
-    dispatch_backend!(kind, |DB| build_update_sql_with_backend::<DB>(
-        table, nonkeys, keys
-    ))
-}
-
-fn build_update_sql_with_backend<DB: SqlBackend>(
-    table: &str,
-    nonkeys: &[String],
-    keys: &[String],
-) -> Result<String> {
-    if keys.is_empty() {
-        bail!("update 模式需要指定 key_columns");
-    }
-
-    let mut ctx = BuildCtx::<DB>::new();
-    UpdateStatement {
-        table,
-        nonkeys,
-        keys,
-    }
-    .walk_ast(&mut ctx);
-    Ok(ctx.finish())
-}
-
-/// 构建 DELETE SQL（完整带占位符，走 execute_with_params 逐行执行）
-pub fn build_delete_sql(table: &str, keys: &[String], kind: DatabaseKind) -> Result<String> {
-    dispatch_backend!(kind, |DB| build_delete_sql_with_backend::<DB>(table, keys))
-}
-
-fn build_delete_sql_with_backend<DB: SqlBackend>(table: &str, keys: &[String]) -> Result<String> {
-    if keys.is_empty() {
-        bail!("delete 模式需要指定 key_columns");
-    }
-
-    let mut ctx = BuildCtx::<DB>::new();
-    DeleteStatement { table, keys }.walk_ast(&mut ctx);
-    Ok(ctx.finish())
-}
-
-/// 构建 INSERT/UPSERT 批量 VALUES SQL，并按行优先顺序收集绑定值。
-pub fn build_values_query(
-    base_sql: &str,
-    rows: &[Vec<UnifiedValue>],
-    suffix: &str,
-    kind: DatabaseKind,
-) -> Result<BuiltWriteQuery> {
-    dispatch_backend!(kind, |DB| build_values_query_with_backend::<DB>(
-        base_sql, rows, suffix
-    ))
-}
-
 fn build_values_query_with_backend<DB: SqlBackend>(
     base_sql: &str,
     rows: &[Vec<UnifiedValue>],
@@ -1281,22 +1254,6 @@ fn build_values_query_with_backend<DB: SqlBackend>(
     }
     .walk_ast(&mut ctx);
     Ok(ctx.finish_query())
-}
-
-/// 构建 UPDATE SQL，并按 SET 列、WHERE key 列的顺序收集绑定值。
-pub fn build_update_query(
-    table: &str,
-    columns: &[String],
-    row: &[UnifiedValue],
-    key_columns: &[String],
-    kind: DatabaseKind,
-) -> Result<BuiltWriteQuery> {
-    dispatch_backend!(kind, |DB| build_update_query_with_backend::<DB>(
-        table,
-        columns,
-        row,
-        key_columns
-    ))
 }
 
 fn build_update_query_with_backend<DB: SqlBackend>(
@@ -1324,22 +1281,6 @@ fn build_update_query_with_backend<DB: SqlBackend>(
     }
     .walk_ast(&mut ctx);
     Ok(ctx.finish_query())
-}
-
-/// 构建 DELETE SQL，并按 WHERE key 列的顺序收集绑定值。
-pub fn build_delete_query(
-    table: &str,
-    columns: &[String],
-    row: &[UnifiedValue],
-    key_columns: &[String],
-    kind: DatabaseKind,
-) -> Result<BuiltWriteQuery> {
-    dispatch_backend!(kind, |DB| build_delete_query_with_backend::<DB>(
-        table,
-        columns,
-        row,
-        key_columns
-    ))
 }
 
 fn build_delete_query_with_backend<DB: SqlBackend>(
@@ -1402,43 +1343,92 @@ fn values_for_columns(
         .collect()
 }
 
-/// 准备写入批次
-pub fn prepare_write_batch(
-    columns: &[String],
-    rows_data: &[Vec<UnifiedValue>],
-    table_name: &str,
-    key_columns: &[String],
-    mode: WriteMode,
-    kind: DatabaseKind,
-) -> Result<WriteBatch> {
-    WriteRows::new(columns.to_vec(), rows_data.to_vec())
-        .table(table_name)
-        .key_columns(key_columns)
-        .mode(mode)
-        .database_kind(kind)
-        .build()
-}
-
-/// 执行批量写入
+/// 根据连接池类型生成并执行 RDBMS 写入 SQL。
 ///
-/// SQL builder 负责生成占位符并整理绑定值，executor 只负责执行参数化 SQL。
-pub async fn execute_db_write(
-    batch: &WriteBatch,
+/// 用法：
+/// 1. writer 层先把 `MappingRow` 批次转换成 `WriteRows`。
+/// 2. 调用本函数并传入目标表、写入模式、key_columns 和 batch_size。
+/// 3. 本函数根据 `RdbmsPool` 选择 PostgreSQL/MySQL 后端，生成参数化 SQL 并执行。
+///
+/// 参数说明：
+/// - `pool`: 目标库连接池，也是运行时选择数据库后端的唯一边界。
+/// - `table`: 目标表名。
+/// - `mode`: 写入模式，支持 insert/upsert/update/delete。
+/// - `key_columns`: upsert/update/delete 的匹配列；insert 可为空。
+/// - `write_rows`: 待写入数据，`write_rows.columns` 是列顺序，
+///   `write_rows.values[*]` 是对应 value 列表。
+/// - `batch_size`: insert/upsert 每批拼接的行数；传 0 时按 1 处理。
+///
+/// 执行过程：
+/// - 空数据直接返回 `Ok(0)`。
+/// - 在 `RdbmsPool` 边界 match 一次，之后进入具体后端的编译期分派。
+/// - insert/upsert 按 `batch_size` 分片，批量生成一条 VALUES SQL。
+/// - update/delete 每行生成一条带参数的 SQL。
+/// - executor 只负责执行 SQL builder 返回的 `sql + params`。
+pub async fn execute_rdbms_write(
     pool: &Arc<RdbmsPool>,
+    table: &str,
+    mode: WriteMode,
+    key_columns: &[String],
+    write_rows: WriteRows,
     batch_size: usize,
 ) -> Result<usize> {
-    if batch.rows.is_empty() {
+    if write_rows.values.is_empty() {
         return Ok(0);
     }
 
     let executor = pool.executor();
-    let kind = database_kind_from_pool(pool.as_ref());
-    let mut processed = 0usize;
+    // 运行时数据库类型只在连接池边界判断一次，SQL 构建进入具体后端泛型实现。
+    match pool.as_ref() {
+        RdbmsPool::Postgres(_) => {
+            execute_write_with_backend::<PostgresBackend>(
+                executor.as_ref(),
+                table,
+                mode,
+                key_columns,
+                &write_rows,
+                batch_size,
+            )
+            .await
+        }
+        RdbmsPool::Mysql(_) => {
+            execute_write_with_backend::<MysqlBackend>(
+                executor.as_ref(),
+                table,
+                mode,
+                key_columns,
+                &write_rows,
+                batch_size,
+            )
+            .await
+        }
+    }
+}
 
-    match batch.mode {
+async fn execute_write_with_backend<DB: SqlBackend>(
+    executor: &dyn super::pool::DatabaseExecutor,
+    table: &str,
+    mode: WriteMode,
+    key_columns: &[String],
+    write_rows: &WriteRows,
+    batch_size: usize,
+) -> Result<usize>
+where
+    for<'a> ConflictFragment<'a, DB>: QueryFragment<DB>,
+{
+    let mut processed = 0usize;
+    let batch_size = batch_size.max(1);
+    match mode {
         WriteMode::Insert | WriteMode::Upsert => {
-            for chunk in batch.rows.chunks(batch_size) {
-                let query = batch.build_values_query(chunk, kind)?;
+            // insert/upsert 可以把多行 values 合并成一条参数化 SQL。
+            for chunk in write_rows.values.chunks(batch_size) {
+                let query = WriteSqlBuilder::<DB>::build_many(
+                    table,
+                    mode,
+                    key_columns,
+                    &write_rows.columns,
+                    chunk,
+                )?;
                 executor
                     .execute_with_params(&query.sql, &query.params)
                     .await?;
@@ -1446,8 +1436,15 @@ pub async fn execute_db_write(
             }
         }
         WriteMode::Update | WriteMode::Delete => {
-            for r in &batch.rows {
-                let query = batch.build_row_query(r, kind)?;
+            // update/delete 的 WHERE 条件依赖当前行 key 值，逐行生成并执行。
+            for row in &write_rows.values {
+                let query = WriteSqlBuilder::<DB>::build_one(
+                    table,
+                    mode,
+                    key_columns,
+                    &write_rows.columns,
+                    row,
+                )?;
                 executor
                     .execute_with_params(&query.sql, &query.params)
                     .await?;
@@ -1455,15 +1452,7 @@ pub async fn execute_db_write(
             }
         }
     }
-
     Ok(processed)
-}
-
-fn database_kind_from_pool(pool: &RdbmsPool) -> DatabaseKind {
-    match pool {
-        RdbmsPool::Postgres(_) => DatabaseKind::Postgres,
-        RdbmsPool::Mysql(_) => DatabaseKind::Mysql,
-    }
 }
 
 /// Upsert 前置校验：key_columns 对应的列在目标表上必须有 UNIQUE 索引（含 PRIMARY KEY）

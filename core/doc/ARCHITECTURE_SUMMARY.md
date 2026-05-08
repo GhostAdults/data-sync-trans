@@ -141,7 +141,7 @@ fn apply_mapping(
 ) -> Result<Vec<MappedRow>>
 
 // 类型转换
-fn to_typed_value(v: &JsonValue, type_hint: Option<&str>) -> Result<TypedVal>
+fn to_unified_value(v: &JsonValue, type_hint: Option<&str>) -> Result<UnifiedValue>
 ```
 
 ### 数据写入

@@ -9,6 +9,7 @@
 //! - json: JSON 类型
 //! - text: 文本类型
 
+use anyhow::Result;
 use relus_common::data_source_config::DataSourceConfig;
 use relus_common::job_config::JobConfig;
 use relus_common::types::{SourceType, TypeConverterRegistry};
@@ -76,7 +77,7 @@ fn test_type_conversion() {
 }
 
 /// 测试 RecordBuilder 构建记录
-fn test_record_builder() {
+fn test_record_builder() -> Result<()> {
     println!("\n========== RecordBuilder 测试 ==========\n");
 
     let mut column_mapping = BTreeMap::new();
@@ -97,7 +98,7 @@ fn test_record_builder() {
     column_types.insert("created_at".to_string(), "timestamp".to_string());
     column_types.insert("metadata".to_string(), "json".to_string());
 
-    let builder = RecordBuilder::new(column_mapping, Some(column_types))
+    let builder = RecordBuilder::new(column_mapping, Some(column_types))?
         .with_source_type(SourceType::MySQL)
         .with_table_name("users");
 
@@ -170,6 +171,7 @@ fn test_record_builder() {
         }
         Err(e) => println!("  错误: {}", e),
     }
+    Ok(())
 }
 
 #[tokio::main]
@@ -178,7 +180,9 @@ async fn main() {
     test_type_conversion();
 
     // 运行 RecordBuilder 测试
-    test_record_builder();
+    if let Err(e) = test_record_builder() {
+        println!("RecordBuilder 测试失败: {}", e);
+    }
 
     println!("\n========== 数据库同步测试 ==========\n");
 
