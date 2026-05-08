@@ -3,7 +3,7 @@
 //! 演示如何从真实数据库发现表结构并检测 Schema 演进
 //! Schema 缓存持久化到磁盘
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use relus_common::JobConfig;
 use relus_connector_rdbms::pool::RdbmsPool;
 use relus_connector_rdbms::schema::{
@@ -13,10 +13,12 @@ use relus_connector_rdbms::schema::{
 use relus_connector_rdbms::util::get_pool_from_config;
 use serde_json::json;
 use std::collections::BTreeMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 /// Schema 缓存默认目录
 const SCHEMA_CACHE_DIR: &str = "./schema_cache";
+const DEFAULT_JOB_CONFIG_PATH: &str = "../cli/user_config/default_job.json";
 
 /// 从配置创建数据库连接池
 async fn create_pool_from_config(config: &JobConfig) -> Result<Arc<RdbmsPool>> {
@@ -123,9 +125,11 @@ async fn main() -> Result<()> {
     println!("Schema 自动发现与演进检测测试");
     println!("========================================");
 
-    // 读取配置文件
-    let config_content = include_str!("E:\\github\\Relus\\cli\\user_config\\default_job.json");
-    let configs: serde_json::Value = serde_json::from_str(config_content)?;
+    // 读取配置文件。路径基于 core/Cargo.toml 所在目录，兼容 Windows/Linux/macOS。
+    let config_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(DEFAULT_JOB_CONFIG_PATH);
+    let config_content = std::fs::read_to_string(&config_path)
+        .with_context(|| format!("读取配置文件失败: {}", config_path.display()))?;
+    let configs: serde_json::Value = serde_json::from_str(&config_content)?;
 
     // 获取数据库配置
     let input_config = &configs["tasks"][0]["input"]["config"]["connections"][0];
@@ -153,7 +157,9 @@ async fn main() -> Result<()> {
         .get("password")
         .and_then(|v| v.as_str())
         .unwrap_or_default();
-    let table_name = input_config["table"].as_str().unwrap();
+    let table_name = input_config["table"]
+        .as_str()
+        .context("配置缺少 tasks[0].input.config.connections[0].table")?;
 
     println!(
         "数据库: {}://{}@{}:{}/{}",
@@ -218,7 +224,7 @@ async fn main() -> Result<()> {
     println!("已有缓存: {}", has_cache);
 
     // 创建 Schema 发现器
-    let discoverer = RdbmsDiscoverer::new(pool.clone(), table_name.to_string());
+    let discoverer = RdbmsDiscoverer::new(Arc::clone(&pool), table_name.to_string());
 
     // 检查表是否存在
     let exists = discoverer.table_exists(table_name).await?;

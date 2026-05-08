@@ -821,367 +821,6 @@ impl<DB: SqlBackend> QueryFragment<DB> for BatchValuesStatement<'_> {
         out.push_sql(self.suffix);
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn select_quotes_postgres_columns_only() {
-        let sql = SqlBuilder::<PostgresBackend>::new()
-            .select("id, name", "users")
-            .build();
-        println!("Generated SQL: {}", sql);
-        assert_eq!(sql, "SELECT \"id\", \"name\" FROM users");
-    }
-
-    #[test]
-    fn select_keeps_mysql_columns() {
-        let sql = SqlBuilder::<MysqlBackend>::new()
-            .select("id, name", "users")
-            .build();
-
-        assert_eq!(sql, "SELECT id, name FROM users");
-    }
-
-    #[test]
-    fn count_supports_table_and_custom_query() {
-        let builder = SqlBuilder::<MysqlBackend>::new();
-
-        assert_eq!(builder.count("users", None), "SELECT COUNT(*) FROM users");
-        assert_eq!(
-            builder.count("users", Some("SELECT id FROM users WHERE active = 1")),
-            "SELECT COUNT(*) FROM (SELECT id FROM users WHERE active = 1) AS subquery"
-        );
-    }
-
-    #[test]
-    fn range_query_combines_where_clause() {
-        let sql = SqlBuilder::<PostgresBackend>::new().pk_range_select(PkRangeSelect {
-            table: "users",
-            columns: "id, name",
-            where_clause: Some("active = true"),
-            pk: "id",
-            min: "a",
-            max: "b",
-            inclusive_end: false,
-        });
-
-        assert_eq!(
-            sql,
-            "SELECT \"id\", \"name\" FROM users WHERE (active = true) AND (\"id\" >= 'a' AND \"id\" < 'b')"
-        );
-    }
-
-    #[test]
-    fn null_pk_query_combines_where_clause() {
-        let sql = SqlBuilder::<MysqlBackend>::new().null_pk_select(
-            "users",
-            "id, name",
-            Some("active = 1"),
-            "id",
-        );
-
-        assert_eq!(
-            sql,
-            "SELECT id, name FROM users WHERE (active = 1) AND (id IS NULL)"
-        );
-    }
-
-    #[test]
-    fn limit_offset_query() {
-        let sql = SqlBuilder::<MysqlBackend>::new().limit_offset_select(
-            "users",
-            "id, name",
-            Some("active = 1"),
-            20,
-            40,
-        );
-
-        assert_eq!(
-            sql,
-            "SELECT id, name FROM users WHERE (active = 1) LIMIT 20 OFFSET 40"
-        );
-    }
-
-    #[test]
-    fn literal_string_escapes_single_quote() {
-        assert_eq!(
-            SqlBuilder::<MysqlBackend>::literal_string("O'Reilly"),
-            "'O''Reilly'"
-        );
-    }
-
-    #[test]
-    fn write_rows_only_keeps_columns_and_rows() {
-        let columns = vec!["id".to_string(), "name".to_string()];
-        let rows = vec![vec![
-            UnifiedValue::Int(1),
-            UnifiedValue::String("Alice".to_string()),
-        ]];
-
-        let write_rows = WriteRows::new(columns.clone(), rows.clone());
-
-        assert_eq!(write_rows.columns, columns);
-        assert_eq!(write_rows.values, rows);
-    }
-
-    #[test]
-    fn insert_sql_keeps_existing_dialect_output() {
-        let columns = vec!["id".to_string(), "name".to_string()];
-
-        assert_eq!(
-            build_insert_sql_with_backend::<PostgresBackend>("users", &columns),
-            "INSERT INTO users (\"id\", \"name\")"
-        );
-        assert_eq!(
-            build_insert_sql_with_backend::<MysqlBackend>("users", &columns),
-            "INSERT INTO users (id, name)"
-        );
-    }
-
-    #[test]
-    fn upsert_sql_keeps_existing_postgres_output() {
-        let columns = vec!["id".to_string(), "name".to_string(), "age".to_string()];
-        let keys = vec!["id".to_string()];
-        let nonkeys: Vec<String> = vec!["name".to_string(), "age".to_string()];
-
-        let parts =
-            build_upsert_sql_with_backend::<PostgresBackend>("users", &columns, &keys, &nonkeys)
-                .unwrap();
-
-        assert_eq!(
-            parts.prefix,
-            "INSERT INTO users (\"id\", \"name\", \"age\")"
-        );
-        assert_eq!(
-            parts.suffix,
-            " ON CONFLICT (\"id\") DO UPDATE SET \"name\" = EXCLUDED.\"name\", \"age\" = EXCLUDED.\"age\""
-        );
-    }
-
-    #[test]
-    fn upsert_sql_keeps_existing_mysql_output() {
-        let columns = vec!["id".to_string(), "name".to_string(), "age".to_string()];
-        let keys = vec!["id".to_string()];
-        let nonkeys = vec!["name".to_string(), "age".to_string()];
-
-        let parts =
-            build_upsert_sql_with_backend::<MysqlBackend>("users", &columns, &keys, &nonkeys)
-                .unwrap();
-
-        assert_eq!(parts.prefix, "INSERT INTO users (id, name, age)");
-        assert_eq!(
-            parts.suffix,
-            " ON DUPLICATE KEY UPDATE name = VALUES(name), age = VALUES(age)"
-        );
-    }
-
-    #[test]
-    fn write_sql_builder_builds_upsert_and_update_queries() {
-        let columns = vec!["id".to_string(), "name".to_string()];
-        let rows = vec![vec![
-            UnifiedValue::Int(1),
-            UnifiedValue::String("Alice".to_string()),
-        ]];
-        let keys = vec!["id".to_string()];
-
-        let upsert = WriteSqlBuilder::<PostgresBackend>::build_many(
-            "users",
-            WriteMode::Upsert,
-            &keys,
-            &columns,
-            &rows,
-        )
-        .unwrap();
-        assert_eq!(
-            upsert.sql,
-            "INSERT INTO users (\"id\", \"name\") VALUES ($1, $2) ON CONFLICT (\"id\") DO UPDATE SET \"name\" = EXCLUDED.\"name\""
-        );
-
-        let update = WriteSqlBuilder::<MysqlBackend>::build_one(
-            "users",
-            WriteMode::Update,
-            &keys,
-            &columns,
-            &rows[0],
-        )
-        .unwrap();
-        assert_eq!(update.sql, "UPDATE users SET name = ? WHERE id = ?");
-    }
-
-    #[test]
-    fn values_query_collects_postgres_placeholders_and_params() {
-        let columns = vec!["id".to_string(), "name".to_string()];
-        let rows = vec![
-            vec![
-                UnifiedValue::Int(1),
-                UnifiedValue::String("Alice".to_string()),
-            ],
-            vec![
-                UnifiedValue::Int(2),
-                UnifiedValue::String("Bob".to_string()),
-            ],
-        ];
-
-        let query = WriteSqlBuilder::<PostgresBackend>::build_many(
-            "users",
-            WriteMode::Insert,
-            &[],
-            &columns,
-            &rows,
-        )
-        .unwrap();
-
-        assert_eq!(
-            query.sql,
-            "INSERT INTO users (\"id\", \"name\") VALUES ($1, $2), ($3, $4)"
-        );
-        assert_eq!(
-            query.params,
-            vec![
-                UnifiedValue::Int(1),
-                UnifiedValue::String("Alice".to_string()),
-                UnifiedValue::Int(2),
-                UnifiedValue::String("Bob".to_string())
-            ]
-        );
-    }
-
-    #[test]
-    fn values_query_collects_mysql_placeholders_and_upsert_suffix() {
-        let columns = vec!["id".to_string(), "name".to_string()];
-        let rows = vec![vec![
-            UnifiedValue::Int(1),
-            UnifiedValue::String("Alice".to_string()),
-        ]];
-        let keys = vec!["id".to_string()];
-
-        let query = WriteSqlBuilder::<MysqlBackend>::build_many(
-            "users",
-            WriteMode::Upsert,
-            &keys,
-            &columns,
-            &rows,
-        )
-        .unwrap();
-
-        assert_eq!(
-            query.sql,
-            "INSERT INTO users (id, name) VALUES (?, ?) ON DUPLICATE KEY UPDATE name = VALUES(name)"
-        );
-        assert_eq!(
-            query.params,
-            vec![
-                UnifiedValue::Int(1),
-                UnifiedValue::String("Alice".to_string())
-            ]
-        );
-    }
-
-    #[test]
-    fn postgres_upsert_requires_key_columns() {
-        let columns = vec!["id".to_string(), "name".to_string()];
-        let rows = vec![vec![
-            UnifiedValue::Int(1),
-            UnifiedValue::String("Alice".to_string()),
-        ]];
-
-        let err = WriteSqlBuilder::<PostgresBackend>::build_many(
-            "users",
-            WriteMode::Upsert,
-            &[],
-            &columns,
-            &rows,
-        )
-        .unwrap_err();
-
-        assert!(err.to_string().contains("upsert 模式需要指定 key_columns"));
-    }
-
-    #[test]
-    fn write_sql_builder_rejects_mismatched_row_width() {
-        let columns = vec!["id".to_string(), "name".to_string()];
-        let rows = vec![vec![UnifiedValue::Int(1)]];
-
-        let err = WriteSqlBuilder::<MysqlBackend>::build_many(
-            "users",
-            WriteMode::Insert,
-            &[],
-            &columns,
-            &rows,
-        )
-        .unwrap_err();
-
-        assert!(err.to_string().contains("写入数据列数不匹配"));
-    }
-
-    #[test]
-    fn update_query_reorders_values_by_sql_columns() {
-        let columns = vec!["id".to_string(), "name".to_string(), "age".to_string()];
-        let row = vec![
-            UnifiedValue::Int(1),
-            UnifiedValue::String("Alice".to_string()),
-            UnifiedValue::Int(30),
-        ];
-        let keys = vec!["id".to_string()];
-
-        let query = WriteSqlBuilder::<PostgresBackend>::build_one(
-            "users",
-            WriteMode::Update,
-            &keys,
-            &columns,
-            &row,
-        )
-        .unwrap();
-
-        assert_eq!(
-            query.sql,
-            "UPDATE users SET \"name\" = $1, \"age\" = $2 WHERE \"id\" = $3"
-        );
-        assert_eq!(
-            query.params,
-            vec![
-                UnifiedValue::String("Alice".to_string()),
-                UnifiedValue::Int(30),
-                UnifiedValue::Int(1)
-            ]
-        );
-    }
-
-    #[test]
-    fn delete_query_collects_key_values_only() {
-        let columns = vec!["id".to_string(), "name".to_string()];
-        let row = vec![
-            UnifiedValue::Int(1),
-            UnifiedValue::String("Alice".to_string()),
-        ];
-        let keys = vec!["id".to_string()];
-
-        let query = WriteSqlBuilder::<MysqlBackend>::build_one(
-            "users",
-            WriteMode::Delete,
-            &keys,
-            &columns,
-            &row,
-        )
-        .unwrap();
-
-        assert_eq!(query.sql, "DELETE FROM users WHERE id = ?");
-        assert_eq!(query.params, vec![UnifiedValue::Int(1)]);
-    }
-
-    #[test]
-    fn dialect_dispatch_stays_at_wrapper_boundary() {
-        let source = include_str!("sql_builder.rs");
-
-        assert!(!source.contains(concat!("Write", "Dialect")));
-        assert!(!source.contains(concat!("match self", ".kind")));
-        assert!(!source.contains(concat!("match out", ".dialect")));
-        assert!(!source.contains(concat!(".", "db_kind", "(")));
-    }
-}
-
 /// 分离主键列和非主键列
 pub fn split_keys_nonkeys(all_cols: &[String], key_cols: &[String]) -> (Vec<String>, Vec<String>) {
     let mut keys = Vec::new();
@@ -1543,5 +1182,365 @@ async fn query_unique_columns(pool: &RdbmsPool, table: &str) -> Result<Vec<Strin
                 .filter_map(|r| r.try_get("column_name").ok())
                 .collect())
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn select_quotes_postgres_columns_only() {
+        let sql = SqlBuilder::<PostgresBackend>::new()
+            .select("id, name", "users")
+            .build();
+        println!("Generated SQL: {}", sql);
+        assert_eq!(sql, "SELECT \"id\", \"name\" FROM users");
+    }
+
+    #[test]
+    fn select_keeps_mysql_columns() {
+        let sql = SqlBuilder::<MysqlBackend>::new()
+            .select("id, name", "users")
+            .build();
+
+        assert_eq!(sql, "SELECT id, name FROM users");
+    }
+
+    #[test]
+    fn count_supports_table_and_custom_query() {
+        let builder = SqlBuilder::<MysqlBackend>::new();
+
+        assert_eq!(builder.count("users", None), "SELECT COUNT(*) FROM users");
+        assert_eq!(
+            builder.count("users", Some("SELECT id FROM users WHERE active = 1")),
+            "SELECT COUNT(*) FROM (SELECT id FROM users WHERE active = 1) AS subquery"
+        );
+    }
+
+    #[test]
+    fn range_query_combines_where_clause() {
+        let sql = SqlBuilder::<PostgresBackend>::new().pk_range_select(PkRangeSelect {
+            table: "users",
+            columns: "id, name",
+            where_clause: Some("active = true"),
+            pk: "id",
+            min: "a",
+            max: "b",
+            inclusive_end: false,
+        });
+
+        assert_eq!(
+            sql,
+            "SELECT \"id\", \"name\" FROM users WHERE (active = true) AND (\"id\" >= 'a' AND \"id\" < 'b')"
+        );
+    }
+
+    #[test]
+    fn null_pk_query_combines_where_clause() {
+        let sql = SqlBuilder::<MysqlBackend>::new().null_pk_select(
+            "users",
+            "id, name",
+            Some("active = 1"),
+            "id",
+        );
+
+        assert_eq!(
+            sql,
+            "SELECT id, name FROM users WHERE (active = 1) AND (id IS NULL)"
+        );
+    }
+
+    #[test]
+    fn limit_offset_query() {
+        let sql = SqlBuilder::<MysqlBackend>::new().limit_offset_select(
+            "users",
+            "id, name",
+            Some("active = 1"),
+            20,
+            40,
+        );
+
+        assert_eq!(
+            sql,
+            "SELECT id, name FROM users WHERE (active = 1) LIMIT 20 OFFSET 40"
+        );
+    }
+
+    #[test]
+    fn literal_string_escapes_single_quote() {
+        assert_eq!(
+            SqlBuilder::<MysqlBackend>::literal_string("O'Reilly"),
+            "'O''Reilly'"
+        );
+    }
+
+    #[test]
+    fn write_rows_only_keeps_columns_and_rows() {
+        let columns = vec!["id".to_string(), "name".to_string()];
+        let rows = vec![vec![
+            UnifiedValue::Int(1),
+            UnifiedValue::String("Alice".to_string()),
+        ]];
+
+        let write_rows = WriteRows::new(columns.clone(), rows.clone());
+
+        assert_eq!(write_rows.columns, columns);
+        assert_eq!(write_rows.values, rows);
+    }
+
+    #[test]
+    fn insert_sql_keeps_existing_dialect_output() {
+        let columns = vec!["id".to_string(), "name".to_string()];
+
+        assert_eq!(
+            build_insert_sql_with_backend::<PostgresBackend>("users", &columns),
+            "INSERT INTO users (\"id\", \"name\")"
+        );
+        assert_eq!(
+            build_insert_sql_with_backend::<MysqlBackend>("users", &columns),
+            "INSERT INTO users (id, name)"
+        );
+    }
+
+    #[test]
+    fn upsert_sql_keeps_existing_postgres_output() {
+        let columns = vec!["id".to_string(), "name".to_string(), "age".to_string()];
+        let keys = vec!["id".to_string()];
+        let nonkeys: Vec<String> = vec!["name".to_string(), "age".to_string()];
+
+        let parts =
+            build_upsert_sql_with_backend::<PostgresBackend>("users", &columns, &keys, &nonkeys)
+                .unwrap();
+
+        assert_eq!(
+            parts.prefix,
+            "INSERT INTO users (\"id\", \"name\", \"age\")"
+        );
+        assert_eq!(
+            parts.suffix,
+            " ON CONFLICT (\"id\") DO UPDATE SET \"name\" = EXCLUDED.\"name\", \"age\" = EXCLUDED.\"age\""
+        );
+    }
+
+    #[test]
+    fn upsert_sql_keeps_existing_mysql_output() {
+        let columns = vec!["id".to_string(), "name".to_string(), "age".to_string()];
+        let keys = vec!["id".to_string()];
+        let nonkeys = vec!["name".to_string(), "age".to_string()];
+
+        let parts =
+            build_upsert_sql_with_backend::<MysqlBackend>("users", &columns, &keys, &nonkeys)
+                .unwrap();
+
+        assert_eq!(parts.prefix, "INSERT INTO users (id, name, age)");
+        assert_eq!(
+            parts.suffix,
+            " ON DUPLICATE KEY UPDATE name = VALUES(name), age = VALUES(age)"
+        );
+    }
+
+    #[test]
+    fn write_sql_builder_builds_upsert_and_update_queries() {
+        let columns = vec!["id".to_string(), "name".to_string()];
+        let rows = vec![vec![
+            UnifiedValue::Int(1),
+            UnifiedValue::String("Alice".to_string()),
+        ]];
+        let keys = vec!["id".to_string()];
+
+        let upsert = WriteSqlBuilder::<PostgresBackend>::build_many(
+            "users",
+            WriteMode::Upsert,
+            &keys,
+            &columns,
+            &rows,
+        )
+        .unwrap();
+        assert_eq!(
+            upsert.sql,
+            "INSERT INTO users (\"id\", \"name\") VALUES ($1, $2) ON CONFLICT (\"id\") DO UPDATE SET \"name\" = EXCLUDED.\"name\""
+        );
+
+        let update = WriteSqlBuilder::<MysqlBackend>::build_one(
+            "users",
+            WriteMode::Update,
+            &keys,
+            &columns,
+            &rows[0],
+        )
+        .unwrap();
+        assert_eq!(update.sql, "UPDATE users SET name = ? WHERE id = ?");
+    }
+
+    #[test]
+    fn values_query_collects_postgres_placeholders_and_params() {
+        let columns = vec!["id".to_string(), "name".to_string()];
+        let rows = vec![
+            vec![
+                UnifiedValue::Int(1),
+                UnifiedValue::String("Alice".to_string()),
+            ],
+            vec![
+                UnifiedValue::Int(2),
+                UnifiedValue::String("Bob".to_string()),
+            ],
+        ];
+
+        let query = WriteSqlBuilder::<PostgresBackend>::build_many(
+            "users",
+            WriteMode::Insert,
+            &[],
+            &columns,
+            &rows,
+        )
+        .unwrap();
+
+        assert_eq!(
+            query.sql,
+            "INSERT INTO users (\"id\", \"name\") VALUES ($1, $2), ($3, $4)"
+        );
+        assert_eq!(
+            query.params,
+            vec![
+                UnifiedValue::Int(1),
+                UnifiedValue::String("Alice".to_string()),
+                UnifiedValue::Int(2),
+                UnifiedValue::String("Bob".to_string())
+            ]
+        );
+    }
+
+    #[test]
+    fn values_query_collects_mysql_placeholders_and_upsert_suffix() {
+        let columns = vec!["id".to_string(), "name".to_string()];
+        let rows = vec![vec![
+            UnifiedValue::Int(1),
+            UnifiedValue::String("Alice".to_string()),
+        ]];
+        let keys = vec!["id".to_string()];
+
+        let query = WriteSqlBuilder::<MysqlBackend>::build_many(
+            "users",
+            WriteMode::Upsert,
+            &keys,
+            &columns,
+            &rows,
+        )
+        .unwrap();
+
+        assert_eq!(
+            query.sql,
+            "INSERT INTO users (id, name) VALUES (?, ?) ON DUPLICATE KEY UPDATE name = VALUES(name)"
+        );
+        assert_eq!(
+            query.params,
+            vec![
+                UnifiedValue::Int(1),
+                UnifiedValue::String("Alice".to_string())
+            ]
+        );
+    }
+
+    #[test]
+    fn postgres_upsert_requires_key_columns() {
+        let columns = vec!["id".to_string(), "name".to_string()];
+        let rows = vec![vec![
+            UnifiedValue::Int(1),
+            UnifiedValue::String("Alice".to_string()),
+        ]];
+
+        let err = WriteSqlBuilder::<PostgresBackend>::build_many(
+            "users",
+            WriteMode::Upsert,
+            &[],
+            &columns,
+            &rows,
+        )
+        .unwrap_err();
+
+        assert!(err.to_string().contains("upsert 模式需要指定 key_columns"));
+    }
+
+    #[test]
+    fn write_sql_builder_rejects_mismatched_row_width() {
+        let columns = vec!["id".to_string(), "name".to_string()];
+        let rows = vec![vec![UnifiedValue::Int(1)]];
+
+        let err = WriteSqlBuilder::<MysqlBackend>::build_many(
+            "users",
+            WriteMode::Insert,
+            &[],
+            &columns,
+            &rows,
+        )
+        .unwrap_err();
+
+        assert!(err.to_string().contains("写入数据列数不匹配"));
+    }
+
+    #[test]
+    fn update_query_reorders_values_by_sql_columns() {
+        let columns = vec!["id".to_string(), "name".to_string(), "age".to_string()];
+        let row = vec![
+            UnifiedValue::Int(1),
+            UnifiedValue::String("Alice".to_string()),
+            UnifiedValue::Int(30),
+        ];
+        let keys = vec!["id".to_string()];
+
+        let query = WriteSqlBuilder::<PostgresBackend>::build_one(
+            "users",
+            WriteMode::Update,
+            &keys,
+            &columns,
+            &row,
+        )
+        .unwrap();
+
+        assert_eq!(
+            query.sql,
+            "UPDATE users SET \"name\" = $1, \"age\" = $2 WHERE \"id\" = $3"
+        );
+        assert_eq!(
+            query.params,
+            vec![
+                UnifiedValue::String("Alice".to_string()),
+                UnifiedValue::Int(30),
+                UnifiedValue::Int(1)
+            ]
+        );
+    }
+
+    #[test]
+    fn delete_query_collects_key_values_only() {
+        let columns = vec!["id".to_string(), "name".to_string()];
+        let row = vec![
+            UnifiedValue::Int(1),
+            UnifiedValue::String("Alice".to_string()),
+        ];
+        let keys = vec!["id".to_string()];
+
+        let query = WriteSqlBuilder::<MysqlBackend>::build_one(
+            "users",
+            WriteMode::Delete,
+            &keys,
+            &columns,
+            &row,
+        )
+        .unwrap();
+
+        assert_eq!(query.sql, "DELETE FROM users WHERE id = ?");
+        assert_eq!(query.params, vec![UnifiedValue::Int(1)]);
+    }
+
+    #[test]
+    fn dialect_dispatch_stays_at_wrapper_boundary() {
+        let source = include_str!("sql_builder.rs");
+
+        assert!(!source.contains(concat!("Write", "Dialect")));
+        assert!(!source.contains(concat!("match self", ".kind")));
+        assert!(!source.contains(concat!("match out", ".dialect")));
+        assert!(!source.contains(concat!(".", "db_kind", "(")));
     }
 }
