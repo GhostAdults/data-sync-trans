@@ -57,7 +57,10 @@ indicatif = "0.17"
 anyhow = "1.0"
 axum = "0.7"
 rand = "0.10"
-reqwest = { version = "0.12", features = ["json"] }
+reqwest = { version = "0.12", default-features = false, features = [
+    "json",
+    "rustls-tls",
+] }
 inventory = "0.3"
 mysql_cdc = "0.2"
 cron = "0.15"
