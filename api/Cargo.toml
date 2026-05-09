@@ -1,0 +1,22 @@
+[package]
+name = "relus_api"
+version = { workspace = true }
+edition = { workspace = true }
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+relus_common = { workspace = true }
+relus_connector_rdbms = { workspace = true }
+
+anyhow = { workspace = true }
+axum = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sqlx = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+
+[lints]
+workspace = true

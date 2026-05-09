@@ -6,7 +6,10 @@ pub mod pipeline;
 use relus_reader as _;
 use relus_writer as _;
 
-use crate::core::scheduler::TaskScheduler;
+use crate::core::runner::RunStatus;
+use crate::core::scheduler::{
+    SchedulerControlHandle, SchedulerError, SchedulerResponse, TaskScheduler,
+};
 use anyhow::{Context, Result};
 use parking_lot::RwLock;
 use relus_common::app_config::config_loader::{
@@ -17,6 +20,10 @@ use relus_common::app_config::schema::ConfigSchema;
 use relus_common::app_config::value::ConfigValue;
 use relus_common::app_config::watcher;
 use relus_common::job_config::JobConfig;
+use relus_common::resp::ApiResp;
+use relus_api::server::{
+    ApiFuture, ApiHandlerResult, AppState, SchedulerControl, SharedState, StatusCode, SyncExecutor,
+};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -154,10 +161,117 @@ pub fn read_config(path: PathBuf) -> Result<JobConfig> {
     Ok(cfg)
 }
 
+struct CoreSyncExecutor;
+
+impl SyncExecutor for CoreSyncExecutor {
+    fn execute_sync(&self, config: JobConfig) -> ApiFuture<ApiHandlerResult> {
+        Box::pin(async move {
+            match crate::core::serve::start_job(config).await {
+                Ok(result) => (
+                    StatusCode::OK,
+                    ApiResp {
+                        ok: result.status == RunStatus::Success,
+                        data: Some(serde_json::to_value(&result).unwrap_or_default()),
+                        error: result.error,
+                    },
+                ),
+                Err(e) => (
+                    StatusCode::BAD_REQUEST,
+                    ApiResp {
+                        ok: false,
+                        data: None,
+                        error: Some(format!("数据同步错误: {}", e)),
+                    },
+                ),
+            }
+        })
+    }
+}
+
+struct CoreSchedulerControl {
+    handle: SchedulerControlHandle,
+}
+
+impl SchedulerControl for CoreSchedulerControl {
+    fn query_tasks(&self, job_id: Option<String>) -> ApiFuture<ApiHandlerResult> {
+        let handle = self.handle.clone();
+        Box::pin(async move { scheduler_result(handle.query_tasks(job_id).await) })
+    }
+
+    fn submit_task(&self, path: String) -> ApiFuture<ApiHandlerResult> {
+        let handle = self.handle.clone();
+        Box::pin(async move { scheduler_result(handle.submit_task(path.into()).await) })
+    }
+
+    fn cancel_task(&self, job_id: String) -> ApiFuture<ApiHandlerResult> {
+        let handle = self.handle.clone();
+        Box::pin(async move { scheduler_result(handle.cancel_task(job_id).await) })
+    }
+}
+
+fn api_state() -> SharedState {
+    let mut state = AppState::new().with_sync_executor(Arc::new(CoreSyncExecutor));
+    if let Some(config_manager) = init_system_config() {
+        state = state.with_config_manager(config_manager);
+    }
+    Arc::new(state)
+}
+
+fn scheduler_result(result: Result<SchedulerResponse, SchedulerError>) -> ApiHandlerResult {
+    match result {
+        Ok(response) => {
+            let data = match serde_json::to_value(response) {
+                Ok(value) => Some(value),
+                Err(e) => {
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        ApiResp {
+                            ok: false,
+                            data: None,
+                            error: Some(e.to_string()),
+                        },
+                    );
+                }
+            };
+
+            (
+                StatusCode::OK,
+                ApiResp {
+                    ok: true,
+                    data,
+                    error: None,
+                },
+            )
+        }
+        Err(error) => scheduler_failure(error),
+    }
+}
+
+fn scheduler_failure(error: SchedulerError) -> ApiHandlerResult {
+    let status = match error {
+        SchedulerError::JobNotFound { .. } => StatusCode::NOT_FOUND,
+        SchedulerError::JobAlreadyExists { .. }
+        | SchedulerError::InvalidConfig { .. }
+        | SchedulerError::MaxConcurrencyReached { .. } => StatusCode::BAD_REQUEST,
+        SchedulerError::SchedulerUnavailable => StatusCode::SERVICE_UNAVAILABLE,
+        SchedulerError::Internal { .. } => StatusCode::INTERNAL_SERVER_ERROR,
+    };
+    let message = error.message();
+
+    (
+        status,
+        ApiResp {
+            ok: false,
+            data: None,
+            error: Some(message),
+        },
+    )
+}
+
 // 启动 HTTP 服务
 pub async fn run_serve(host: String, port: u16) -> Result<()> {
     init_system_config();
-    core::serve::serve_http(host, port, None).await?;
+    relus_api::server::start(host, port, api_state()).await?;
     Ok(())
 }
 
@@ -230,11 +344,16 @@ pub async fn run_scheduler(
     }
 
     let (host, port) = scheduler_server_addr(host, port);
-    let server = tokio::spawn(crate::core::serve::serve_http(
-        host.clone(),
-        port,
-        Some(scheduler_handle),
-    ));
+    let mut state = AppState::new()
+        .with_sync_executor(Arc::new(CoreSyncExecutor))
+        .with_scheduler(Arc::new(CoreSchedulerControl {
+            handle: scheduler_handle,
+        }));
+    if let Some(config_manager) = init_system_config() {
+        state = state.with_config_manager(config_manager);
+    }
+    let state = Arc::new(state);
+    let server = tokio::spawn(relus_api::server::start(host.clone(), port, state));
     tracing::info!("[Run] scheduler control API listening on {}:{}", host, port);
     println!("Scheduler control API listening on {}:{}", host, port);
     tracing::info!("[Run] scheduler starting, waiting for tasks...");

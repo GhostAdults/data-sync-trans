@@ -2479,6 +2479,21 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7a2d987857b319362043e95f5353c0535c1f58eec5336fdfcf626430af7def58"
 
 [[package]]
+name = "relus_api"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "relus_common",
+ "relus_connector_rdbms",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "relus_cli"
 version = "0.1.0"
 dependencies = [
@@ -2539,7 +2554,6 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
- "axum",
  "chrono",
  "clap",
  "config",
@@ -2552,6 +2566,7 @@ dependencies = [
  "rand 0.10.0",
  "redb",
  "regex",
+ "relus_api",
  "relus_common",
  "relus_connector_rdbms",
  "relus_reader",

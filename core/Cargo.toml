@@ -11,6 +11,7 @@ relus_common = { workspace = true }
 relus_connector_rdbms = { workspace = true }
 relus_reader = { workspace = true }
 relus_writer = { workspace = true }
+relus_api = { workspace = true }
 
 clap = { workspace = true }
 chrono = { workspace = true }
@@ -21,7 +22,6 @@ parking_lot = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 anyhow = { workspace = true }
-axum = { workspace = true }
 rand = { workspace = true }
 sqlx = { workspace = true }
 regex = { workspace = true }

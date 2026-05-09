@@ -1,6 +1,6 @@
 [workspace]
 
-members = ["core", "cli", "reader", "common", "writer", "connector-rdbms"]
+members = ["core", "cli", "reader", "common", "writer", "connector-rdbms", "api"]
 resolver = "3"
 
 [workspace.package]
@@ -27,6 +27,7 @@ relus_common = { path = "common" }
 relus_reader = { path = "reader" }
 relus_writer = { path = "writer" }
 relus_connector_rdbms = { path = "connector-rdbms" }
+relus_api = { path = "api" }
 
 
 toml = "0.8"
