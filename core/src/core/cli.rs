@@ -6,9 +6,10 @@ use crate::init_and_watch_config;
 use crate::run_scheduler;
 use crate::run_serve;
 use clap::{Parser, Subcommand};
-use relus_common::{ApiConfig, JobConfig};
+use relus_common::JobConfig;
 use relus_connector_rdbms::pool::detect_database_kind;
 use relus_connector_rdbms::pool::DatabaseKind;
+use relus_reader::rdbms_reader_util::util::client_tool::{extract_by_path, fetch_json};
 
 use anyhow::{bail, Context, Result};
 use regex::Regex;
@@ -19,7 +20,6 @@ use sqlx::{MySqlPool, PgPool, Row};
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::PathBuf;
-use std::process::Command;
 
 #[derive(Parser)]
 #[command(name = "Relus CLI")]
@@ -100,7 +100,7 @@ pub async fn run_cli(cmd: Commands) -> Result<()> {
         Commands::TestApi { config } => {
             let cfg = read_job_config(&config)?;
             let api_config = cfg.source.parse_api_config()?;
-            let v = fetch_json(&api_config)?;
+            let v = fetch_json(&api_config).await?;
             println!("{}", serde_json::to_string_pretty(&v)?);
             let items = if let Some(p) = &api_config.items_json_path {
                 extract_by_path(&v, p).unwrap_or(&Value::Null).clone()
@@ -299,122 +299,6 @@ fn print_run_result(result: &crate::core::runner::RunResult) {
             );
         }
     }
-}
-
-fn try_curl(cfg: &ApiConfig) -> Result<Vec<u8>> {
-    let mut args: Vec<String> = Vec::new();
-    args.push("-sS".to_string());
-    if let Some(t) = cfg.timeout_secs {
-        args.push("--max-time".to_string());
-        args.push(t.to_string());
-    }
-    let method = cfg.method.as_deref().unwrap_or("GET").to_uppercase();
-    args.push("-X".to_string());
-    args.push(method.clone());
-    if let Some(hs) = &cfg.headers {
-        for (k, v) in hs {
-            args.push("-H".to_string());
-            args.push(format!("{}: {}", k, v));
-        }
-    }
-    if let Some(b) = &cfg.body {
-        let s = serde_json::to_string(b)?;
-        args.push("-d".to_string());
-        args.push(s.clone());
-    }
-    args.push(cfg.url.clone());
-    let output = Command::new("curl").args(&args).output();
-    match output {
-        Ok(out) => {
-            if !out.status.success() {
-                bail!("curl 请求失败，状态码: {:?}", out.status.code());
-            }
-            Ok(out.stdout)
-        }
-        Err(e) => bail!("无法执行 curl: {}", e),
-    }
-}
-
-fn try_powershell(cfg: &ApiConfig) -> Result<Vec<u8>> {
-    let method = cfg.method.as_deref().unwrap_or("GET").to_uppercase();
-    let mut ps = String::new();
-    ps.push_str("$hdr=@{};");
-    if let Some(hs) = &cfg.headers {
-        for (k, v) in hs {
-            ps.push_str(&format!(
-                "$hdr['{}']='{}';",
-                k.replace("'", "''"),
-                v.replace("'", "''")
-            ));
-        }
-    }
-    let body = if let Some(b) = &cfg.body {
-        let s = serde_json::to_string(b)?;
-        format!(
-            " -ContentType 'application/json' -Body @'{0}'@ ",
-            s.replace("'", "''")
-        )
-    } else {
-        "".to_string()
-    };
-    let timeout = cfg.timeout_secs.unwrap_or(30);
-    ps.push_str(&format!(
-        "$r=Invoke-RestMethod -Uri '{}' -Method {} -Headers $hdr{} -TimeoutSec {}; $r | ConvertTo-Json -Depth 20",
-        cfg.url.replace("'", "''"),
-        method,
-        body,
-        timeout
-    ));
-    let output = Command::new("powershell")
-        .args(["-NoProfile", "-Command", &ps])
-        .output();
-    match output {
-        Ok(out) => {
-            if !out.status.success() {
-                bail!(
-                    "powershell Invoke-RestMethod 失败，状态码: {:?}",
-                    out.status.code()
-                );
-            }
-            Ok(out.stdout)
-        }
-        Err(e) => bail!("无法执行 powershell: {}", e),
-    }
-}
-
-fn extract_by_path<'a>(root: &'a Value, path: &str) -> Option<&'a Value> {
-    if path == "/" || path.is_empty() {
-        return Some(root);
-    }
-    if path.starts_with('/') {
-        return root.pointer(path);
-    }
-    let mut cur = root;
-    for seg in path.split('.') {
-        match cur {
-            Value::Object(map) => {
-                cur = map.get(seg)?;
-            }
-            Value::Array(arr) => {
-                if let Ok(idx) = seg.parse::<usize>() {
-                    cur = arr.get(idx)?;
-                } else {
-                    return None;
-                }
-            }
-            _ => return None,
-        }
-    }
-    Some(cur)
-}
-
-fn fetch_json(cfg: &ApiConfig) -> Result<Value> {
-    let data = match try_curl(cfg) {
-        Ok(d) => d,
-        Err(_) => try_powershell(cfg)?,
-    };
-    let v: Value = serde_json::from_slice(&data)?;
-    Ok(v)
 }
 
 async fn list_tables_postgres(pool: &PgPool) -> Result<Vec<String>> {
